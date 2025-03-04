@@ -9,7 +9,7 @@ system:
 
 # Model configuration
 models:
-  default_provider: "openai"  # Options: openai, anthropic, google, huggingface, local
+  default_provider: "openai"  # Options: openai, anthropic, google, huggingface, local, ollama
   
   openai:
     model_name: "gpt-4-turbo"
@@ -40,6 +40,13 @@ models:
     device: "cuda"  # or "cpu"
     max_tokens: 2048
     temperature: 0.7
+    
+  ollama:
+    model_name: "llama3"  # Default model, users can change to any model available in their Ollama instance
+    api_base: "http://localhost:11434"  # Default Ollama API endpoint
+    max_tokens: 2048
+    temperature: 0.7
+    timeout: 120  # Timeout in seconds
 
 # Agent configuration
 agents:

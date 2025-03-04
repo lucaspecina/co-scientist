@@ -21,11 +21,15 @@ MODEL_PROVIDER_MAP = {
     "google": "core.models.google_model.GoogleModel",
     "huggingface": "core.models.huggingface_model.HuggingFaceModel",
     "local": "core.models.local_model.LocalModel",
+    "ollama": "core.models.ollama_model.OllamaModel",
 }
 
 
 class ModelFactory:
     """Factory for creating LLM instances based on configuration."""
+    
+    # Dictionary to store registered model classes
+    registered_models = {}
     
     @staticmethod
     def create_model(config: Dict[str, Any]) -> BaseModel:
@@ -47,68 +51,66 @@ class ModelFactory:
         if provider == "default" or provider is None:
             provider = config.get("default_provider", "openai")
             
-        if provider not in MODEL_PROVIDER_MAP:
-            supported = ", ".join(MODEL_PROVIDER_MAP.keys())
-            raise ValueError(f"Unsupported model provider: {provider}. Supported providers: {supported}")
+        if provider not in MODEL_PROVIDER_MAP and provider not in ModelFactory.registered_models:
+            raise ValueError(f"Unsupported model provider: {provider}")
         
-        # Get the model class path and load it dynamically
-        model_class_path = MODEL_PROVIDER_MAP[provider]
-        module_path, class_name = model_class_path.rsplit(".", 1)
+        # Check if we have a registered model class
+        if provider in ModelFactory.registered_models:
+            model_class = ModelFactory.registered_models[provider]
+        else:
+            # Import the module and get the class
+            try:
+                module_path, class_name = MODEL_PROVIDER_MAP[provider].rsplit(".", 1)
+                module = importlib.import_module(module_path)
+                model_class = getattr(module, class_name)
+            except (ImportError, AttributeError) as e:
+                logger.error(f"Error loading model module for provider {provider}: {e}")
+                raise ValueError(f"Could not load model implementation for provider: {provider}")
         
+        # Create and return the model instance
         try:
-            module = importlib.import_module(module_path)
-            model_class = getattr(module, class_name)
-        except (ImportError, AttributeError) as e:
-            logger.error(f"Failed to load model adapter for provider {provider}: {e}")
-            raise ValueError(f"Failed to load model adapter: {e}")
-        
-        # Get provider-specific configuration
-        provider_config = config.get(provider, {})
-        
-        # Create and return model instance
-        try:
-            return model_class.from_config(provider_config)
+            return model_class.from_config(config)
         except Exception as e:
-            logger.error(f"Failed to instantiate {provider} model: {e}")
-            raise ValueError(f"Failed to instantiate model: {e}")
+            logger.error(f"Error creating model instance for provider {provider}: {e}")
+            raise
     
     @staticmethod
     def create_model_for_agent(agent_type: str, config: Dict[str, Any]) -> BaseModel:
         """
-        Create a model instance for a specific agent type.
+        Create a model instance for a specific agent type based on configuration.
         
         Args:
-            agent_type: The type of agent (e.g., 'generation', 'reflection')
-            config: Complete configuration dictionary
+            agent_type: Type of agent (e.g., "generation", "reflection")
+            config: Configuration dictionary containing model settings
                 
         Returns:
             Configured BaseModel instance for the agent
         """
-        # Get global model configuration
-        models_config = config.get("models", {})
-        default_provider = models_config.get("default_provider", "openai")
-        
-        # Get agent-specific configuration
+        # Get the provider specified for this agent type, falling back to defaults
         agent_config = config.get("agents", {}).get(agent_type, {})
-        provider = agent_config.get("model_provider", default_provider)
+        provider = agent_config.get("model_provider", "default")
         
-        # If provider is specified as 'default', use the default provider
-        if provider == "default":
-            provider = default_provider
-            
-        # Create model config by combining default provider config with agent-specific overrides
-        model_config = {
-            "provider": provider,
-            "default_provider": default_provider
-        }
+        # Copy the config to avoid modifying the original
+        model_config = dict(config)
         
-        # Add provider-specific configuration
-        if provider in models_config:
-            model_config[provider] = models_config[provider].copy()
-            
-            # Override with agent-specific settings if provided
-            for key, value in agent_config.items():
-                if key in model_config[provider]:
-                    model_config[provider][key] = value
+        # Set the provider in the config
+        model_config["provider"] = provider
         
-        return ModelFactory.create_model(model_config) 
+        # Override model settings with agent-specific settings if provided
+        for key in ["temperature", "max_tokens"]:
+            if key in agent_config:
+                model_config[key] = agent_config[key]
+        
+        return ModelFactory.create_model(model_config)
+    
+    @classmethod
+    def register_model(cls, provider_name: str, model_class) -> None:
+        """
+        Register a custom model class for a provider.
+        
+        Args:
+            provider_name: Name of the provider
+            model_class: The model class to register
+        """
+        cls.registered_models[provider_name] = model_class
+        logger.info(f"Registered custom model class for provider: {provider_name}") 
