@@ -1,273 +1,321 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
-Main Entry Point for AI Co-Scientist
+AI Co-Scientist Command Line Interface
 
-This script provides a command-line interface to the AI Co-Scientist system.
-It demonstrates how to use the model-agnostic architecture with different
-LLM providers.
+This script provides a simple command-line interface to interact with the
+AI Co-Scientist system, allowing users to create and manage research sessions.
 """
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
-import yaml
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
-from core.models.model_factory import ModelFactory
-from core.models.base_model import BaseModel
-from core.agents.generation_agent import GenerationAgent
-from core.memory.memory_manager import create_memory_manager
-from framework.queue.task_queue import create_task_queue
-from framework.supervisor.supervisor import Supervisor
+from core.controller import CoScientistController
 
-
-# Set up logging
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('co_scientist.log')
+    ]
 )
-logger = logging.getLogger(__name__)
+
+logger = logging.getLogger("co_scientist_cli")
 
 
-async def run_single_generation(model_provider: str, research_goal: str, api_key: Optional[str] = None):
-    """
-    Run a single hypothesis generation using the specified model provider.
-    This demonstrates how to use the model-agnostic design with different providers.
+class CoScientistCLI:
+    """Command-line interface for the AI Co-Scientist system."""
     
-    Args:
-        model_provider: Name of the model provider to use
-        research_goal: Research goal to generate hypotheses for
-        api_key: Optional API key for the model provider
-    """
-    # Load default configuration
-    with open("config/default_config.yaml", "r") as f:
-        config = yaml.safe_load(f)
+    def __init__(self):
+        """Initialize the CLI."""
+        self.controller = None
+        self.args = None
     
-    # Override default provider
-    config["models"]["default_provider"] = model_provider
-    
-    # Set API key if provided
-    if api_key:
-        config["models"][model_provider]["api_key"] = api_key
-    
-    # Create model instance
-    model_config = {
-        "provider": model_provider,
-        "default_provider": model_provider,
-        model_provider: config["models"][model_provider]
-    }
-    model = ModelFactory.create_model(model_config)
-    
-    # Create generation agent
-    agent_config = config["agents"]["generation"]
-    agent = GenerationAgent(
-        model=model,
-        prompt_template_path=agent_config.get("prompt_template", "config/templates/generation_agent.txt"),
-        num_hypotheses=5,
-        creativity=0.7
-    )
-    
-    # Run generation
-    logger.info(f"Generating hypotheses using {model_provider} for research goal: {research_goal}")
-    
-    result = await agent.run_with_timing({
-        "research_goal": research_goal,
-        "domain": "general science"
-    })
-    
-    # Print results
-    if "error" in result:
-        logger.error(f"Error generating hypotheses: {result['error']}")
-    else:
-        hypotheses = result.get("hypotheses", [])
-        logger.info(f"Generated {len(hypotheses)} hypotheses:")
+    def parse_arguments(self):
+        """Parse command line arguments."""
+        parser = argparse.ArgumentParser(
+            description="AI Co-Scientist: An AI system for scientific hypothesis generation and experimentation"
+        )
         
-        for i, hypothesis in enumerate(hypotheses):
-            print(f"\n--- Hypothesis {i+1} ---")
-            print(f"Title: {hypothesis.get('title', 'N/A')}")
-            print(f"Description: {hypothesis.get('description', 'N/A')}")
-            print(f"Mechanism: {hypothesis.get('mechanism', 'N/A')}")
-            print(f"Testability: {hypothesis.get('testability', 'N/A')}")
+        # Configuration options
+        parser.add_argument("--config", type=str, help="Path to configuration file")
+        
+        # Subcommands
+        subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+        
+        # Start command
+        start_parser = subparsers.add_parser("start", help="Start the system")
+        
+        # Create session command
+        create_parser = subparsers.add_parser("create", help="Create a new research session")
+        create_parser.add_argument("--goal", type=str, required=True, help="Research goal description")
+        create_parser.add_argument("--domain", type=str, required=True, help="Scientific domain")
+        create_parser.add_argument("--background", type=str, help="Background information")
+        create_parser.add_argument("--constraints", type=str, nargs="+", help="Research constraints")
+        
+        # Run session command
+        run_parser = subparsers.add_parser("run", help="Run a research session")
+        run_parser.add_argument("--session", type=str, required=True, help="Session ID")
+        run_parser.add_argument("--wait", action="store_true", help="Wait for completion")
+        
+        # Add feedback command
+        feedback_parser = subparsers.add_parser("feedback", help="Add feedback to a session")
+        feedback_parser.add_argument("--session", type=str, required=True, help="Session ID")
+        feedback_parser.add_argument("--text", type=str, required=True, help="Feedback text")
+        feedback_parser.add_argument("--hypotheses", type=str, nargs="+", help="Target hypothesis IDs")
+        
+        # Get session status command
+        status_parser = subparsers.add_parser("status", help="Get session status")
+        status_parser.add_argument("--session", type=str, required=True, help="Session ID")
+        
+        # Get hypotheses command
+        hypotheses_parser = subparsers.add_parser("hypotheses", help="Get hypotheses from a session")
+        hypotheses_parser.add_argument("--session", type=str, required=True, help="Session ID")
+        hypotheses_parser.add_argument("--limit", type=int, default=10, help="Maximum number of hypotheses")
+        hypotheses_parser.add_argument("--all", action="store_true", help="Include all iterations")
+        
+        # List sessions command
+        subparsers.add_parser("list", help="List all sessions")
+        
+        # System info command
+        subparsers.add_parser("info", help="Get system information")
+        
+        # Parse arguments
+        self.args = parser.parse_args()
+        
+        if not self.args.command:
+            parser.print_help()
+            sys.exit(1)
+    
+    async def run(self):
+        """Run the CLI command."""
+        # Parse arguments
+        self.parse_arguments()
+        
+        # Initialize controller
+        config_path = self.args.config
+        self.controller = CoScientistController(config_path=config_path)
+        
+        # Process command
+        if self.args.command == "start":
+            await self._cmd_start()
+        elif self.args.command == "create":
+            await self._cmd_create()
+        elif self.args.command == "run":
+            await self._cmd_run()
+        elif self.args.command == "feedback":
+            await self._cmd_feedback()
+        elif self.args.command == "status":
+            await self._cmd_status()
+        elif self.args.command == "hypotheses":
+            await self._cmd_hypotheses()
+        elif self.args.command == "list":
+            await self._cmd_list()
+        elif self.args.command == "info":
+            self._cmd_info()
+    
+    async def _cmd_start(self):
+        """Start the system."""
+        print("Starting AI Co-Scientist system...")
+        try:
+            await self.controller.startup()
+            print("System started successfully!")
+        except Exception as e:
+            print(f"Error starting system: {str(e)}")
+            sys.exit(1)
+    
+    async def _cmd_create(self):
+        """Create a new research session."""
+        print("Creating new research session...")
+        
+        # Ensure system is ready
+        await self.controller.startup()
+        
+        # Get arguments
+        goal = self.args.goal
+        domain = self.args.domain
+        background = self.args.background or ""
+        constraints = self.args.constraints or []
+        
+        # Create session
+        try:
+            session_id = await self.controller.create_session(
+                goal_description=goal,
+                domain=domain,
+                background=background,
+                constraints=constraints
+            )
+            print(f"Session created successfully!")
+            print(f"Session ID: {session_id}")
+            print(f"Run the session with: python main.py run --session {session_id}")
             
-        if "metadata" in result:
-            print(f"\nExecution time: {result['metadata'].get('execution_time', 0):.2f} seconds")
-
-
-async def run_full_session(config_path: str, research_goal: str, domain: str = "general science"):
-    """
-    Run a complete research session with the multi-agent workflow.
+        except Exception as e:
+            print(f"Error creating session: {str(e)}")
+            sys.exit(1)
     
-    Args:
-        config_path: Path to configuration file
-        research_goal: Research goal to generate hypotheses for
-        domain: Scientific domain
-    """
-    # Load configuration
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-    
-    # Initialize memory manager
-    memory_manager = create_memory_manager(config)
-    
-    # Initialize task queue
-    task_queue = create_task_queue(config)
-    
-    # Initialize agents
-    agents = {}
-    
-    # Process each agent type
-    for agent_type, agent_config in config.get("agents", {}).items():
-        count = agent_config.get("count", 1)
-        agents[agent_type] = []
+    async def _cmd_run(self):
+        """Run a research session."""
+        print("Running research session...")
         
-        # Create the specified number of instances
-        for i in range(count):
-            # Get a model for this agent
-            model = ModelFactory.create_model_for_agent(agent_type, config)
+        # Ensure system is ready
+        await self.controller.startup()
+        
+        # Get arguments
+        session_id = self.args.session
+        wait = self.args.wait
+        
+        # Define status callback
+        async def status_callback(session_id, old_state, new_state):
+            print(f"Session state changed: {old_state} -> {new_state}")
+        
+        # Run session
+        try:
+            status = await self.controller.run_session(
+                session_id=session_id,
+                wait_for_completion=wait,
+                status_callback=status_callback
+            )
             
-            # Create agent instance (example for generation agent)
-            if agent_type == "generation":
-                agent = GenerationAgent.from_config(agent_config, model)
-                agents[agent_type].append(agent)
-            # Add other agent types here...
-            else:
-                logger.warning(f"Agent type {agent_type} not implemented yet")
+            print("\nSession status:")
+            self._print_json(status)
+            
+            print("\nCurrent state:", status.get("state", "unknown"))
+            
+            if status.get("state") == "awaiting_feedback":
+                print("\nThe session is waiting for your feedback.")
+                print("Provide feedback with: python main.py feedback --session", session_id, "--text \"Your feedback here\"")
+                
+            if wait and status.get("state") == "completed":
+                # Get hypotheses
+                hypotheses = await self.controller.get_hypotheses(session_id, limit=3)
+                print("\nTop hypotheses:")
+                self._print_json(hypotheses)
+                
+        except Exception as e:
+            print(f"Error running session: {str(e)}")
+            sys.exit(1)
     
-    # Initialize supervisor
-    supervisor = Supervisor.from_config(config, agents, memory_manager, task_queue)
-    
-    # Define update callback
-    def session_update_callback(session):
-        status = session.get("status", "unknown")
-        iteration = session.get("current_iteration", 0)
+    async def _cmd_feedback(self):
+        """Add feedback to a session."""
+        print("Adding feedback to session...")
         
-        if status == "completed":
-            logger.info(f"Session completed after {iteration} iterations")
-        elif status.endswith("_complete"):
-            logger.info(f"Phase {status} completed (iteration {iteration})")
-    
-    # Start session
-    session_id = await supervisor.start_session(
-        research_goal=research_goal,
-        domain=domain,
-        callback=session_update_callback
-    )
-    
-    logger.info(f"Started session {session_id}")
-    
-    # Wait for session to complete
-    while True:
-        session = await supervisor.get_session(session_id)
-        if session.get("complete", False) or session.get("status") == "error":
-            break
-        await asyncio.sleep(1)
-    
-    # Get final results
-    session = await supervisor.get_session(session_id)
-    
-    if session.get("status") == "error":
-        logger.error(f"Session failed: {session.get('error', 'Unknown error')}")
-        return
-    
-    # Print top hypotheses
-    top_hypotheses = session.get("top_hypotheses", [])
-    logger.info(f"Session completed with {len(top_hypotheses)} top hypotheses:")
-    
-    for i, hypothesis in enumerate(top_hypotheses):
-        print(f"\n--- Top Hypothesis {i+1} ---")
-        print(f"Title: {hypothesis.get('title', 'N/A')}")
-        print(f"Description: {hypothesis.get('description', 'N/A')}")
-        print(f"Mechanism: {hypothesis.get('mechanism', 'N/A')}")
-        if "rank" in hypothesis:
-            print(f"Rank: {hypothesis.get('rank')}")
-    
-    # Print meta-review
-    meta_review = session.get("meta_review", {})
-    if meta_review:
-        print("\n--- Meta Review ---")
-        print(f"Summary: {meta_review.get('summary', 'N/A')}")
-        print(f"Recommendations: {meta_review.get('recommendations', 'N/A')}")
-
-
-def main():
-    """Main entry point for the CLI application."""
-    parser = argparse.ArgumentParser(description="AI Co-Scientist CLI")
-    
-    # Create subparsers for different commands
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
-    
-    # Single generation command
-    gen_parser = subparsers.add_parser("generate", help="Run a single hypothesis generation")
-    gen_parser.add_argument(
-        "--model", "-m", 
-        choices=["openai", "anthropic", "google", "huggingface", "local"],
-        default="openai",
-        help="Model provider to use"
-    )
-    gen_parser.add_argument(
-        "--goal", "-g", 
-        required=True,
-        help="Research goal to generate hypotheses for"
-    )
-    gen_parser.add_argument(
-        "--api-key", "-k",
-        help="API key for the model provider (overrides environment variable)"
-    )
-    
-    # Full session command
-    session_parser = subparsers.add_parser("session", help="Run a complete research session")
-    session_parser.add_argument(
-        "--config", "-c",
-        default="config/default_config.yaml",
-        help="Path to configuration file"
-    )
-    session_parser.add_argument(
-        "--goal", "-g",
-        required=True,
-        help="Research goal to generate hypotheses for"
-    )
-    session_parser.add_argument(
-        "--domain", "-d",
-        default="general science",
-        help="Scientific domain"
-    )
-    
-    # Server command
-    server_parser = subparsers.add_parser("server", help="Start the API server")
-    server_parser.add_argument(
-        "--host", 
-        default="0.0.0.0",
-        help="Host to bind the server to"
-    )
-    server_parser.add_argument(
-        "--port", "-p",
-        type=int,
-        default=8000,
-        help="Port to bind the server to"
-    )
-    
-    # Parse arguments
-    args = parser.parse_args()
-    
-    if args.command == "generate":
-        # Run single generation
-        asyncio.run(run_single_generation(args.model, args.goal, args.api_key))
-    elif args.command == "session":
-        # Run full session
-        asyncio.run(run_full_session(args.config, args.goal, args.domain))
-    elif args.command == "server":
-        # Start API server
-        import uvicorn
-        from ui.api.server import app
+        # Ensure system is ready
+        await self.controller.startup()
         
-        uvicorn.run(app, host=args.host, port=args.port)
-    else:
-        # No command specified
-        parser.print_help()
-        sys.exit(1)
+        # Get arguments
+        session_id = self.args.session
+        feedback_text = self.args.text
+        target_hypothesis_ids = self.args.hypotheses
+        
+        # Add feedback
+        try:
+            status = await self.controller.add_feedback(
+                session_id=session_id,
+                feedback=feedback_text,
+                target_hypothesis_ids=target_hypothesis_ids
+            )
+            
+            print("Feedback added successfully!")
+            print("\nSession status:")
+            self._print_json(status)
+            
+        except Exception as e:
+            print(f"Error adding feedback: {str(e)}")
+            sys.exit(1)
+    
+    async def _cmd_status(self):
+        """Get session status."""
+        # Ensure system is ready
+        await self.controller.startup()
+        
+        # Get arguments
+        session_id = self.args.session
+        
+        # Get status
+        try:
+            status = await self.controller.get_session_status(session_id)
+            
+            print("Session status:")
+            self._print_json(status)
+            
+        except Exception as e:
+            print(f"Error getting session status: {str(e)}")
+            sys.exit(1)
+    
+    async def _cmd_hypotheses(self):
+        """Get hypotheses from a session."""
+        # Ensure system is ready
+        await self.controller.startup()
+        
+        # Get arguments
+        session_id = self.args.session
+        limit = self.args.limit
+        include_all = self.args.all
+        
+        # Get hypotheses
+        try:
+            hypotheses = await self.controller.get_hypotheses(
+                session_id=session_id,
+                limit=limit,
+                include_all=include_all
+            )
+            
+            print(f"Hypotheses from session {session_id}:")
+            self._print_json(hypotheses)
+            
+        except Exception as e:
+            print(f"Error getting hypotheses: {str(e)}")
+            sys.exit(1)
+    
+    async def _cmd_list(self):
+        """List all sessions."""
+        # Ensure system is ready
+        await self.controller.startup()
+        
+        # List sessions
+        try:
+            sessions = await self.controller.list_sessions()
+            
+            if not sessions:
+                print("No sessions found.")
+                return
+                
+            print(f"Found {len(sessions)} sessions:")
+            
+            for idx, session in enumerate(sessions, 1):
+                print(f"\n{idx}. Session ID: {session.get('id')}")
+                print(f"   Goal: {session.get('goal')}")
+                print(f"   State: {session.get('state')}")
+                print(f"   Iterations: {session.get('iterations_completed')}/{session.get('max_iterations')}")
+            
+        except Exception as e:
+            print(f"Error listing sessions: {str(e)}")
+            sys.exit(1)
+    
+    def _cmd_info(self):
+        """Get system information."""
+        # Get system info
+        try:
+            info = self.controller.get_system_info()
+            
+            print("AI Co-Scientist System Information:")
+            self._print_json(info)
+            
+        except Exception as e:
+            print(f"Error getting system information: {str(e)}")
+            sys.exit(1)
+    
+    def _print_json(self, data):
+        """Print data as formatted JSON."""
+        print(json.dumps(data, indent=2))
 
 
 if __name__ == "__main__":
-    main() 
+    cli = CoScientistCLI()
+    asyncio.run(cli.run()) 

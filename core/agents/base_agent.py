@@ -1,42 +1,48 @@
 """
 Base Agent Interface for AI Co-Scientist
 
-This module defines the abstract base class that all specialized agents must implement.
+This module defines the abstract base class for all agents in the system.
 """
 
-import asyncio
+import abc
 import logging
 import os
 import time
-from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, Any, Optional, List, Union, Callable
 
 from ..models.base_model import BaseModel
 
 logger = logging.getLogger(__name__)
 
 
-class BaseAgent(ABC):
-    """Abstract base class for all specialized agents."""
+class AgentExecutionError(Exception):
+    """Exception raised when an agent execution fails."""
+    pass
+
+
+class BaseAgent(abc.ABC):
+    """
+    Abstract base class for all agents in the AI Co-Scientist system.
     
-    def __init__(self, 
-                model: BaseModel,
-                prompt_template_path: str,
-                agent_type: str,
-                **kwargs):
+    An agent is responsible for a specific task in the workflow, such as
+    hypothesis generation, criticism, evolution, etc. Each agent type
+    implements custom logic for its specific role.
+    """
+    
+    def __init__(self, model: BaseModel, config: Dict[str, Any]):
         """
-        Initialize the base agent.
+        Initialize an agent.
         
         Args:
-            model: The LLM model instance to use
-            prompt_template_path: Path to the prompt template file
-            agent_type: Type of agent (e.g., 'generation', 'reflection')
-            **kwargs: Additional agent-specific settings
+            model: The language model used by this agent
+            config: Configuration dictionary with agent settings
         """
         self.model = model
-        self.agent_type = agent_type
-        self.prompt_template_path = prompt_template_path
-        self.prompt_template = self._load_prompt_template()
+        self.config = config
+        self.name = config.get("name", self.__class__.__name__)
+        self.description = config.get("description", "")
+        self.system_prompt = config.get("system_prompt", "")
+        self.max_retries = config.get("max_retries", 2)
         
         # Additional metrics and settings
         self.last_execution_time = 0.0
@@ -66,16 +72,20 @@ class BaseAgent(ABC):
             logger.error(f"Error formatting prompt: {e}")
             raise ValueError(f"Error formatting prompt: {e}")
     
-    @abstractmethod
-    async def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    @abc.abstractmethod
+    async def execute(self, context: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute the agent's task.
+        Execute the agent's task based on the provided context and parameters.
         
         Args:
-            input_data: Input data for the agent task
+            context: Dictionary containing context for the task
+            params: Dictionary containing execution parameters
             
         Returns:
-            Dictionary containing the task output
+            Dictionary containing the execution results
+            
+        Raises:
+            AgentExecutionError: On execution failures
         """
         pass
     
@@ -118,7 +128,7 @@ class BaseAgent(ABC):
             }
     
     @classmethod
-    @abstractmethod
+    @abc.abstractmethod
     def from_config(cls, config: Dict[str, Any], model: BaseModel) -> 'BaseAgent':
         """
         Create an agent instance from a configuration dictionary.
@@ -130,4 +140,86 @@ class BaseAgent(ABC):
         Returns:
             Configured agent instance
         """
-        pass 
+        pass
+    
+    def get_info(self) -> Dict[str, Any]:
+        """Get information about this agent."""
+        return {
+            "name": self.name,
+            "type": self.__class__.__name__,
+            "description": self.description
+        }
+    
+    async def _call_model(self, 
+                        prompt: str, 
+                        system_prompt: Optional[str] = None,
+                        schema: Optional[Dict[str, Any]] = None) -> Union[str, Dict[str, Any]]:
+        """
+        Call the language model with error handling and retries.
+        
+        Args:
+            prompt: Main prompt for the model
+            system_prompt: System prompt to prepend (optional)
+            schema: JSON schema for structured output (optional)
+            
+        Returns:
+            Model response as string or dictionary
+            
+        Raises:
+            AgentExecutionError: On persistent model failures
+        """
+        system_prompt = system_prompt or self.system_prompt
+        remaining_retries = self.max_retries
+        
+        while True:
+            try:
+                if schema:
+                    return await self.model.generate_json(
+                        prompt=prompt,
+                        schema=schema,
+                        system_prompt=system_prompt
+                    )
+                else:
+                    return await self.model.generate(
+                        prompt=prompt,
+                        system_prompt=system_prompt
+                    )
+                    
+            except Exception as e:
+                remaining_retries -= 1
+                logger.warning(f"Agent {self.name} model call failed: {str(e)}. Retries left: {remaining_retries}")
+                
+                if remaining_retries <= 0:
+                    raise AgentExecutionError(f"Agent {self.name} failed after max retries: {str(e)}")
+    
+    def _format_context(self, context: Dict[str, Any]) -> str:
+        """
+        Format the context dictionary as a human-readable string.
+        
+        Args:
+            context: Context dictionary
+            
+        Returns:
+            Formatted context string
+        """
+        # Default implementation - can be overridden by subclasses for custom formatting
+        context_str = "Context:\n"
+        
+        for key, value in context.items():
+            if isinstance(value, dict):
+                context_str += f"\n{key.upper()}:\n"
+                for k, v in value.items():
+                    context_str += f"  {k}: {v}\n"
+            elif isinstance(value, list):
+                context_str += f"\n{key.upper()}:\n"
+                for item in value:
+                    if isinstance(item, dict):
+                        for k, v in item.items():
+                            context_str += f"  {k}: {v}\n"
+                        context_str += "\n"
+                    else:
+                        context_str += f"  - {item}\n"
+            else:
+                context_str += f"\n{key.upper()}: {value}\n"
+        
+        return context_str 

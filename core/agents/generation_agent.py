@@ -1,88 +1,76 @@
 """
 Generation Agent for AI Co-Scientist
 
-This agent is responsible for generating initial scientific hypotheses
-based on research goals and domain knowledge.
+This module implements the Generation Agent, which is responsible for
+creating initial research hypotheses based on the research goal.
 """
 
-import json
 import logging
-from typing import Dict, List, Optional, Any
+import json
+from typing import Dict, Any, List, Optional
 
-from ..models.base_model import BaseModel
-from .base_agent import BaseAgent
+from .base_agent import BaseAgent, AgentExecutionError
 
 logger = logging.getLogger(__name__)
 
 
 class GenerationAgent(BaseAgent):
     """
-    Generation Agent generates novel scientific hypotheses.
+    Generation Agent creates initial research hypotheses.
     
-    It uses an LLM to create initial hypotheses based on research goals,
-    domain constraints, and scientific knowledge.
+    This agent uses the language model to generate hypotheses based on a research goal,
+    taking into account any domain constraints and scientist feedback.
     """
     
-    def __init__(self, 
-                model: BaseModel,
-                prompt_template_path: str,
-                num_hypotheses: int = 5,
-                creativity: float = 0.7,
-                **kwargs):
+    def __init__(self, model, config: Dict[str, Any]):
         """
-        Initialize the Generation Agent.
+        Initialize the generation agent.
         
         Args:
-            model: The LLM model instance to use
-            prompt_template_path: Path to the prompt template file
-            num_hypotheses: Number of hypotheses to generate
-            creativity: Value controlling creativity level (0.0-1.0)
-            **kwargs: Additional settings
+            model: Language model to use
+            config: Configuration dictionary
         """
-        super().__init__(
-            model=model,
-            prompt_template_path=prompt_template_path,
-            agent_type="generation",
-            **kwargs
-        )
-        self.num_hypotheses = num_hypotheses
-        self.creativity = creativity
-    
-    async def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        super().__init__(model, config)
+        
+        # Load agent-specific configuration
+        self.generation_count = config.get("generation_count", 5)
+        self.creativity = config.get("creativity", 0.7)  # Higher = more creative
+        self.diversity_threshold = config.get("diversity_threshold", 0.3)
+        
+    async def execute(self, context: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Generate initial scientific hypotheses based on research goals.
+        Generate research hypotheses based on the research goal.
         
         Args:
-            input_data: Dictionary containing:
-                - research_goal: The scientific question or goal
-                - domain: The scientific domain (e.g., "biomedicine")
-                - constraints: Optional constraints or requirements
-                - prior_knowledge: Optional relevant prior knowledge
+            context: Dictionary containing:
+                - goal: Research goal information
+                - iteration: Current iteration number
+                - feedback: List of feedback entries (optional)
+            params: Dictionary containing:
+                - count: Number of hypotheses to generate (optional, overrides config)
+                - creativity: Creativity level (optional, overrides config)
                 
         Returns:
             Dictionary containing:
-                - hypotheses: List of generated hypotheses with details
+                - hypotheses: List of generated hypothesis objects
+                - metadata: Information about the generation process
         """
-        # Extract input parameters
-        research_goal = input_data.get("research_goal")
-        domain = input_data.get("domain", "general science")
-        constraints = input_data.get("constraints", "")
-        prior_knowledge = input_data.get("prior_knowledge", "")
+        # Extract parameters
+        goal = context.get("goal", {})
+        if not goal or not goal.get("description"):
+            raise AgentExecutionError("Research goal is required for hypothesis generation")
+            
+        # Extract and override parameters if provided
+        count = params.get("count", self.generation_count)
+        creativity = params.get("creativity", self.creativity)
+        iteration = context.get("iteration", 0)
+        feedback = context.get("feedback", [])
         
-        if not research_goal:
-            raise ValueError("Research goal is required for hypothesis generation")
+        # Adjust model parameters based on iteration and creativity
+        temperature = min(0.5 + (creativity * 0.5), 0.95)  # Higher for more creative
         
-        # Format the prompt
-        prompt = self._format_prompt(
-            research_goal=research_goal,
-            domain=domain,
-            constraints=constraints,
-            prior_knowledge=prior_knowledge,
-            num_hypotheses=self.num_hypotheses
-        )
-        
-        # Define the expected JSON schema for structured output
-        json_schema = {
+        # Create a JSON schema for the expected output
+        output_schema = {
             "type": "object",
             "properties": {
                 "hypotheses": {
@@ -90,66 +78,173 @@ class GenerationAgent(BaseAgent):
                     "items": {
                         "type": "object",
                         "properties": {
-                            "id": {"type": "string"},
-                            "title": {"type": "string"},
-                            "description": {"type": "string"},
-                            "mechanism": {"type": "string"},
-                            "testability": {"type": "string"},
-                            "novelty_justification": {"type": "string"},
-                            "potential_impact": {"type": "string"}
+                            "text": {
+                                "type": "string",
+                                "description": "The hypothesis statement"
+                            },
+                            "rationale": {
+                                "type": "string",
+                                "description": "Reasoning for why this hypothesis is plausible"
+                            }
                         },
-                        "required": ["id", "title", "description", "mechanism"]
+                        "required": ["text", "rationale"]
                     }
+                },
+                "reasoning": {
+                    "type": "string",
+                    "description": "Explanation of the generation approach"
                 }
             },
-            "required": ["hypotheses"]
+            "required": ["hypotheses", "reasoning"]
         }
         
-        # Set model parameters based on creativity setting
-        temperature = 0.4 + (self.creativity * 0.6)  # Maps 0.0-1.0 to 0.4-1.0
+        # Build the prompt
+        prompt = self._build_generation_prompt(
+            goal=goal,
+            count=count,
+            iteration=iteration,
+            feedback=feedback
+        )
+        
+        # Call the model
+        system_prompt = self._build_system_prompt(creativity)
         
         try:
-            # Use the model to generate hypotheses with JSON output
-            response = await self.model.generate_with_json_output(
+            response = await self._call_model(
                 prompt=prompt,
-                json_schema=json_schema,
-                system_prompt="You are a creative scientific hypothesis generator. Your task is to generate novel, plausible, and testable scientific hypotheses based on the research goal. Focus on creating hypotheses that are grounded in scientific principles but explore new possibilities and connections.",
-                temperature=temperature
+                system_prompt=system_prompt,
+                schema=output_schema
             )
             
-            # Validate response structure
-            if "hypotheses" not in response:
-                logger.warning("Model response missing 'hypotheses' key")
-                response = {"hypotheses": []}
+            # Validate the response
+            hypotheses = response.get("hypotheses", [])
+            if not hypotheses:
+                logger.warning("Generation agent returned no hypotheses")
                 
-            # Add generation metadata to each hypothesis
-            for hypothesis in response["hypotheses"]:
-                hypothesis["source"] = "generation_agent"
-                hypothesis["generation_parameters"] = {
-                    "creativity": self.creativity,
-                    "temperature": temperature
+            # Add metadata to the response
+            result = {
+                "hypotheses": hypotheses,
+                "metadata": {
+                    "count": len(hypotheses),
+                    "creativity": creativity,
+                    "iteration": iteration,
+                    "reasoning": response.get("reasoning", "")
                 }
+            }
             
-            return response
+            return result
+            
         except Exception as e:
-            logger.error(f"Error generating hypotheses: {e}")
-            raise
+            logger.error(f"Generation agent execution failed: {str(e)}")
+            raise AgentExecutionError(f"Failed to generate hypotheses: {str(e)}")
     
-    @classmethod
-    def from_config(cls, config: Dict[str, Any], model: BaseModel) -> 'GenerationAgent':
+    def _build_generation_prompt(self, 
+                               goal: Dict[str, Any],
+                               count: int,
+                               iteration: int,
+                               feedback: List[Dict[str, Any]]) -> str:
         """
-        Create a Generation Agent instance from a configuration dictionary.
+        Build the generation prompt.
         
         Args:
-            config: Configuration dictionary with agent settings
-            model: Model instance to use
+            goal: Research goal dictionary
+            count: Number of hypotheses to generate
+            iteration: Current iteration number
+            feedback: List of feedback entries
             
         Returns:
-            Configured GenerationAgent instance
+            Formatted prompt string
         """
-        return cls(
-            model=model,
-            prompt_template_path=config.get("prompt_template", "config/templates/generation_agent.txt"),
-            num_hypotheses=config.get("num_hypotheses", 5),
-            creativity=config.get("creativity", 0.7)
-        ) 
+        # Extract goal information
+        goal_description = goal.get("description", "")
+        domain = goal.get("domain", "")
+        constraints = goal.get("constraints", [])
+        background = goal.get("background", "")
+        
+        # Start with the goal
+        prompt = f"# Research Goal\n{goal_description}\n\n"
+        
+        # Add domain if available
+        if domain:
+            prompt += f"# Domain\n{domain}\n\n"
+            
+        # Add background if available
+        if background:
+            prompt += f"# Background Information\n{background}\n\n"
+            
+        # Add constraints if available
+        if constraints:
+            prompt += "# Constraints\n"
+            for constraint in constraints:
+                prompt += f"- {constraint}\n"
+            prompt += "\n"
+            
+        # Add feedback from previous iterations
+        if feedback and iteration > 0:
+            prompt += "# Previous Feedback\n"
+            # Take the most recent feedback entries, up to 3
+            recent_feedback = sorted(
+                feedback, 
+                key=lambda x: x.get("iteration", 0), 
+                reverse=True
+            )[:3]
+            
+            for entry in recent_feedback:
+                feedback_text = entry.get("text", "")
+                feedback_iter = entry.get("iteration", 0)
+                prompt += f"Iteration {feedback_iter}: {feedback_text}\n\n"
+                
+        # Add task description
+        prompt += f"# Task\n"
+        prompt += f"Generate {count} scientifically plausible hypotheses for the research goal above."
+        
+        if iteration > 0:
+            prompt += f" This is iteration {iteration}, so incorporate the feedback provided."
+        
+        prompt += "\n\nEach hypothesis should be specific, testable, and potentially impactful."
+        prompt += "\nFor each hypothesis, provide a clear rationale explaining why it's worth investigating."
+        
+        return prompt
+    
+    def _build_system_prompt(self, creativity: float) -> str:
+        """
+        Build the system prompt based on creativity level.
+        
+        Args:
+            creativity: Creativity level (0.0 to 1.0)
+            
+        Returns:
+            System prompt string
+        """
+        base_prompt = """You are a scientific hypothesis generator working with a researcher. 
+Your task is to generate scientifically plausible research hypotheses.
+
+Guidelines:
+- Propose specific, testable hypotheses that could lead to new insights
+- Each hypothesis should identify relationships between variables or mechanisms
+- Consider both established scientific knowledge and innovative possibilities
+- Focus on hypotheses that are falsifiable and have explanatory power
+- Provide a clear rationale for each hypothesis explaining why it's worth investigating
+"""
+
+        if creativity < 0.3:
+            # Low creativity - conservative, well-established
+            base_prompt += """
+Approach this task conservatively. Focus on hypotheses firmly grounded in well-established 
+scientific principles with extensive supporting evidence. Propose incremental advances 
+that extend current knowledge in reliable ways."""
+        elif creativity < 0.7:
+            # Medium creativity - balanced approach
+            base_prompt += """
+Balance established scientific principles with novel ideas. Propose hypotheses that 
+connect existing knowledge in new ways or apply established mechanisms to new contexts. 
+Be thoughtful but willing to consider reasonable extensions of current understanding."""
+        else:
+            # High creativity - innovative, speculative
+            base_prompt += """
+Be innovative and consider unconventional possibilities. Propose hypotheses that challenge 
+assumptions or connect distant domains in surprising ways. While maintaining scientific 
+plausibility, don't be afraid to suggest mechanisms or relationships that haven't been 
+well-explored. Consider reverse-thinking and contrarian perspectives."""
+            
+        return base_prompt 
