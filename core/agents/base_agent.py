@@ -75,17 +75,17 @@ class BaseAgent(abc.ABC):
     @abc.abstractmethod
     async def execute(self, context: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute the agent's task based on the provided context and parameters.
+        Execute the agent's task.
         
         Args:
-            context: Dictionary containing context for the task
-            params: Dictionary containing execution parameters
+            context: Context information for the task
+            params: Parameters for the task
             
         Returns:
-            Dictionary containing the execution results
+            Result of the task execution
             
         Raises:
-            AgentExecutionError: On execution failures
+            AgentExecutionError: If execution fails
         """
         pass
     
@@ -128,19 +128,18 @@ class BaseAgent(abc.ABC):
             }
     
     @classmethod
-    @abc.abstractmethod
-    def from_config(cls, config: Dict[str, Any], model: BaseModel) -> 'BaseAgent':
+    def from_config(cls, config: Dict[str, Any], model: 'BaseModel') -> 'BaseAgent':
         """
-        Create an agent instance from a configuration dictionary.
+        Create an agent instance from configuration.
         
         Args:
-            config: Configuration dictionary with agent settings
-            model: Model instance to use
+            config: Configuration dictionary
+            model: Language model to use
             
         Returns:
             Configured agent instance
         """
-        pass
+        return cls(model, config)
     
     def get_info(self) -> Dict[str, Any]:
         """Get information about this agent."""

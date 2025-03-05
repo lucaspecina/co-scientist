@@ -18,6 +18,9 @@ from .models.model_factory import ModelFactory
 from .agents.agent_factory import AgentFactory
 from .memory.memory_manager import MemoryManager
 from .workflow.supervisor import SupervisorAgent, WorkflowSession, WorkflowState, ResearchGoal
+from .memory.file_system_memory_manager import FileSystemMemoryManager
+from .memory.mongodb_memory_manager import MongoDBMemoryManager
+from .memory.in_memory_memory_manager import InMemoryMemoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -405,19 +408,13 @@ class CoScientistController:
     
     def _init_memory_manager(self) -> MemoryManager:
         """
-        Initialize the memory manager.
+        Initialize the memory manager based on configuration.
         
         Returns:
             Configured memory manager
         """
-        memory_config = self.config.get("memory", {})
-        persistence_type = memory_config.get("persistence_type", "file")
-        
-        if persistence_type == "file":
-            data_dir = memory_config.get("data_dir", "data")
-            os.makedirs(data_dir, exist_ok=True)
-            
-        return MemoryManager(memory_config)
+        from core.memory.memory_manager import create_memory_manager
+        return create_memory_manager(self.config)
     
     def _init_supervisor(self) -> SupervisorAgent:
         """
@@ -435,7 +432,7 @@ class CoScientistController:
     
     def _load_config(self, config_path: Optional[str], config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Load configuration from file or dictionary.
+        Load configuration from file or use default.
         
         Args:
             config_path: Path to configuration file
@@ -448,8 +445,16 @@ class CoScientistController:
             return config
             
         if config_path is not None and os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                return json.load(f)
+            if config_path.endswith('.yaml') or config_path.endswith('.yml'):
+                import yaml
+                with open(config_path, 'r') as f:
+                    return yaml.safe_load(f)
+            else:
+                with open(config_path, 'r') as f:
+                    return json.load(f)
+                
+        # Log warning about missing configuration
+        logger.warning("No configuration provided, using default configuration")
                 
         # Use default configuration
         default_config = {
@@ -459,6 +464,14 @@ class CoScientistController:
                     "provider": "openai",
                     "model_name": "gpt-4"
                 }
+            },
+            "memory": {
+                "backend": "mongodb",
+                "mongodb": {
+                    "uri": "mongodb://localhost:27017/",
+                    "db_name": "co_scientist"
+                },
+                "file_dir": "data"
             },
             "agents": {
                 "generation": {
@@ -486,15 +499,10 @@ class CoScientistController:
                     "output_format": "comprehensive"
                 }
             },
-            "memory": {
-                "persistence_type": "file",
-                "data_dir": "data"
-            },
             "workflow": {
                 "max_iterations": 3,
                 "top_hypotheses_count": 3
             }
         }
         
-        logger.warning("No configuration provided, using default configuration")
         return default_config 

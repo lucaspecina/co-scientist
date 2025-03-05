@@ -1,8 +1,8 @@
 # Default configuration for AI Co-Scientist
 
 system:
-  debug: false
-  log_level: "INFO"
+  debug: true
+  log_level: "DEBUG"
   max_iterations: 5
   tournament_size: 8
   top_hypotheses_count: 3
@@ -12,7 +12,7 @@ models:
   default_provider: "openai"  # Options: openai, anthropic, google, huggingface, local, ollama
   
   openai:
-    model_name: "gpt-4-turbo"
+    model_name: "gpt-4o"
     api_key: ""  # Set via environment variable OPENAI_API_KEY
     max_tokens: 4096
     temperature: 0.7
@@ -53,18 +53,18 @@ agents:
   generation:
     count: 1  # Number of parallel generation agents
     prompt_template: "templates/generation_agent.txt"
-    model_provider: "default"  # Uses the default provider
+    model_provider: "openai"  # Uses the openai provider
     temperature: 0.8  # Override default temperature
   
   reflection:
     count: 2  # Number of parallel reflection agents
     prompt_template: "templates/reflection_agent.txt"
-    model_provider: "default"
+    model_provider: "openai"
   
   ranking:
     count: 1
     prompt_template: "templates/ranking_agent.txt"
-    model_provider: "default"
+    model_provider: "openai"
     criteria:
       novelty: 0.3
       plausibility: 0.4
@@ -74,18 +74,18 @@ agents:
   evolution:
     count: 1
     prompt_template: "templates/evolution_agent.txt"
-    model_provider: "default"
+    model_provider: "openai"
   
   proximity:
     count: 1
     prompt_template: "templates/proximity_agent.txt"
-    model_provider: "default"
+    model_provider: "openai"
     similarity_threshold: 0.8
   
   meta_review:
     count: 1
     prompt_template: "templates/meta_review_agent.txt"
-    model_provider: "default"
+    model_provider: "openai"
 
 # Task execution configuration
 execution:
@@ -105,7 +105,7 @@ execution:
 
 # Memory configuration
 memory:
-  backend: "mongodb"  # Options: mongodb, redis, sqlite
+  backend: "file_system"  # Options: mongodb, file_system, in_memory
   mongodb:
     uri: "mongodb://localhost:27017/"
     db_name: "co_scientist"

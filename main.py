@@ -14,6 +14,10 @@ import os
 import sys
 from typing import Dict, Any, List, Optional
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 from core.controller import CoScientistController
 
 # Configure logging
@@ -100,6 +104,9 @@ class CoScientistCLI:
         
         # Initialize controller
         config_path = self.args.config
+        if config_path is None:
+            config_path = "config/default_config.yaml"
+            
         self.controller = CoScientistController(config_path=config_path)
         
         # Process command

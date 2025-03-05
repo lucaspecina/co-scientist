@@ -13,6 +13,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any, Union
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,37 @@ class MemoryManager(ABC):
     """
     Abstract base class for memory management.
     """
+    
+    @abstractmethod
+    async def startup(self) -> None:
+        """
+        Initialize and start the memory manager.
+        This method should be called before using the memory manager.
+        """
+        pass
+    
+    @abstractmethod
+    async def load_session(self, session_id: str) -> Any:
+        """
+        Load a workflow session from storage.
+        
+        Args:
+            session_id: Unique session identifier
+            
+        Returns:
+            Loaded session object
+        """
+        pass
+    
+    @abstractmethod
+    async def store_session(self, session: Any) -> None:
+        """
+        Store a workflow session.
+        
+        Args:
+            session: Workflow session object
+        """
+        pass
     
     @abstractmethod
     async def save_session(self, session_id: str, session_data: Dict[str, Any]) -> None:
@@ -118,6 +150,41 @@ class InMemoryMemoryManager(MemoryManager):
         """Initialize the in-memory memory manager."""
         self.sessions = {}
         self.hypotheses = {}
+    
+    async def startup(self) -> None:
+        """
+        Initialize and start the in-memory memory manager.
+        """
+        pass
+    
+    async def load_session(self, session_id: str) -> Any:
+        """
+        Load a workflow session from memory.
+        
+        Args:
+            session_id: Unique session identifier
+            
+        Returns:
+            Loaded session object
+        """
+        session_data = await self.get_session(session_id)
+        if not session_data:
+            raise ValueError(f"Session {session_id} not found")
+        
+        # Here you would typically reconstruct a session object from the data
+        # For now, we'll just return the session data dictionary
+        return session_data
+    
+    async def store_session(self, session: Any) -> None:
+        """
+        Store a workflow session in memory.
+        
+        Args:
+            session: Workflow session object
+        """
+        # Convert session to dictionary and store it
+        session_data = session.to_dict() if hasattr(session, 'to_dict') else session
+        await self.save_session(session.id if hasattr(session, 'id') else session_data.get('id'), session_data)
     
     async def save_session(self, session_id: str, session_data: Dict[str, Any]) -> None:
         """
@@ -236,6 +303,75 @@ class FileSystemMemoryManager(MemoryManager):
         # Create directories if they don't exist
         os.makedirs(self.sessions_dir, exist_ok=True)
         os.makedirs(self.hypotheses_dir, exist_ok=True)
+    
+    async def startup(self) -> None:
+        """
+        Initialize and start the file system memory manager.
+        """
+        pass
+    
+    async def load_session(self, session_id: str) -> Any:
+        """
+        Load a workflow session from the file system.
+        
+        Args:
+            session_id: Unique session identifier
+            
+        Returns:
+            Loaded session object
+        """
+        session_data = await self.get_session(session_id)
+        if not session_data:
+            raise ValueError(f"Session {session_id} not found")
+        
+        # Import here to avoid circular imports
+        from ..workflow.supervisor import WorkflowSession, ResearchGoal, WorkflowState, Hypothesis
+        
+        # Reconstruct the goal object
+        goal_data = session_data.get("goal", {})
+        goal = ResearchGoal.from_dict(goal_data)
+        
+        # Reconstruct hypotheses
+        hypotheses = []
+        for h_data in session_data.get("hypotheses", []):
+            hypotheses.append(Hypothesis.from_dict(h_data))
+        
+        # Convert state string to enum
+        state_str = session_data.get("state", "initial")
+        state = WorkflowState(state_str)
+        
+        # Reconstruct the session object
+        session = WorkflowSession(
+            id=session_data.get("id"),
+            goal=goal,
+            hypotheses=hypotheses,
+            iterations_completed=session_data.get("iterations_completed", 0),
+            max_iterations=session_data.get("max_iterations", 5),
+            state=state,
+            feedback_history=session_data.get("feedback_history", []),
+            top_hypotheses=session_data.get("top_hypotheses", []),
+            tool_usage=session_data.get("tool_usage", {})
+        )
+        
+        # Set timestamps if available
+        if "started_at" in session_data and session_data["started_at"]:
+            session.started_at = datetime.fromisoformat(session_data["started_at"])
+        
+        if "completed_at" in session_data and session_data["completed_at"]:
+            session.completed_at = datetime.fromisoformat(session_data["completed_at"])
+        
+        return session
+    
+    async def store_session(self, session: Any) -> None:
+        """
+        Store a workflow session in the file system.
+        
+        Args:
+            session: Workflow session object
+        """
+        # Convert session to dictionary and store it
+        session_data = session.to_dict() if hasattr(session, 'to_dict') else session
+        await self.save_session(session.id if hasattr(session, 'id') else session_data.get('id'), session_data)
     
     async def save_session(self, session_id: str, session_data: Dict[str, Any]) -> None:
         """
@@ -463,6 +599,43 @@ class MongoDBMemoryManager(MemoryManager):
         # This would connect to MongoDB in a real implementation
         logger.info(f"Connecting to MongoDB at {mongo_uri} (db: {db_name})")
     
+    async def startup(self) -> None:
+        """
+        Initialize and start the MongoDB connection.
+        """
+        # In a real implementation, this would establish the MongoDB connection
+        # For now, we'll just pass since the connection info is logged in __init__
+        pass
+    
+    async def load_session(self, session_id: str) -> Any:
+        """
+        Load a workflow session from MongoDB.
+        
+        Args:
+            session_id: Unique session identifier
+            
+        Returns:
+            Loaded session object
+        """
+        session_data = await self.get_session(session_id)
+        if not session_data:
+            raise ValueError(f"Session {session_id} not found")
+        
+        # Here you would typically reconstruct a session object from the data
+        # For now, we'll just return the session data dictionary
+        return session_data
+    
+    async def store_session(self, session: Any) -> None:
+        """
+        Store a workflow session in MongoDB.
+        
+        Args:
+            session: Workflow session object
+        """
+        # Convert session to dictionary and store it
+        session_data = session.to_dict() if hasattr(session, 'to_dict') else session
+        await self.save_session(session.id if hasattr(session, 'id') else session_data.get('id'), session_data)
+    
     async def save_session(self, session_id: str, session_data: Dict[str, Any]) -> None:
         """
         Save session data to MongoDB.
@@ -559,7 +732,7 @@ def create_memory_manager(config: Dict[str, Any]) -> MemoryManager:
             mongo_uri=mongodb_config.get("uri", "mongodb://localhost:27017/"),
             db_name=mongodb_config.get("db_name", "co_scientist")
         )
-    elif backend == "file":
+    elif backend == "file_system":
         return FileSystemMemoryManager(
             data_dir=config.get("memory", {}).get("file_dir", "data")
         )

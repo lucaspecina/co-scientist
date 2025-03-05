@@ -208,43 +208,40 @@ class GenerationAgent(BaseAgent):
     
     def _build_system_prompt(self, creativity: float) -> str:
         """
-        Build the system prompt based on creativity level.
+        Build system prompt based on creativity setting.
         
         Args:
-            creativity: Creativity level (0.0 to 1.0)
+            creativity: Creativity level (0-1)
             
         Returns:
             System prompt string
         """
-        base_prompt = """You are a scientific hypothesis generator working with a researcher. 
-Your task is to generate scientifically plausible research hypotheses.
-
-Guidelines:
-- Propose specific, testable hypotheses that could lead to new insights
-- Each hypothesis should identify relationships between variables or mechanisms
-- Consider both established scientific knowledge and innovative possibilities
-- Focus on hypotheses that are falsifiable and have explanatory power
-- Provide a clear rationale for each hypothesis explaining why it's worth investigating
+        if creativity > 0.8:
+            tone = "highly innovative and out-of-the-box"
+        elif creativity > 0.5:
+            tone = "creative but grounded in scientific principles"
+        else:
+            tone = "conservative and strictly evidence-based"
+            
+        return f"""You are a scientific hypothesis generation system tasked with creating {tone} research hypotheses.
+Ensure that each hypothesis:
+1. Is specific and testable
+2. Has clear scientific significance
+3. Addresses the research goal
+4. Includes a brief explanation of potential mechanisms
+5. Considers constraints and domain knowledge
 """
 
-        if creativity < 0.3:
-            # Low creativity - conservative, well-established
-            base_prompt += """
-Approach this task conservatively. Focus on hypotheses firmly grounded in well-established 
-scientific principles with extensive supporting evidence. Propose incremental advances 
-that extend current knowledge in reliable ways."""
-        elif creativity < 0.7:
-            # Medium creativity - balanced approach
-            base_prompt += """
-Balance established scientific principles with novel ideas. Propose hypotheses that 
-connect existing knowledge in new ways or apply established mechanisms to new contexts. 
-Be thoughtful but willing to consider reasonable extensions of current understanding."""
-        else:
-            # High creativity - innovative, speculative
-            base_prompt += """
-Be innovative and consider unconventional possibilities. Propose hypotheses that challenge 
-assumptions or connect distant domains in surprising ways. While maintaining scientific 
-plausibility, don't be afraid to suggest mechanisms or relationships that haven't been 
-well-explored. Consider reverse-thinking and contrarian perspectives."""
+    @classmethod
+    def from_config(cls, config: Dict[str, Any], model: 'BaseModel') -> 'GenerationAgent':
+        """
+        Create a GenerationAgent instance from configuration.
+        
+        Args:
+            config: Configuration dictionary
+            model: Language model to use
             
-        return base_prompt 
+        Returns:
+            Configured GenerationAgent instance
+        """
+        return cls(model, config) 

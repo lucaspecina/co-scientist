@@ -32,28 +32,25 @@ class RankingAgent(BaseAgent):
         super().__init__(model, config)
         
         # Load agent-specific configuration
-        self.criteria = config.get("criteria", {
-            "novelty": {
-                "description": "Degree to which the hypothesis offers new ideas or approaches",
-                "weight": 0.2
-            },
-            "plausibility": {
-                "description": "Scientific plausibility and grounding in established knowledge",
-                "weight": 0.3
-            },
-            "testability": {
-                "description": "Ease of empirical testing and falsifiability",
-                "weight": 0.25
-            },
-            "impact": {
-                "description": "Potential scientific or practical impact if validated",
-                "weight": 0.15
-            },
-            "goal_alignment": {
-                "description": "Alignment with the original research goal",
-                "weight": 0.1
-            }
+        raw_criteria = config.get("criteria", {
+            "novelty": 0.25,
+            "plausibility": 0.25,
+            "testability": 0.25,
+            "impact": 0.25
         })
+        
+        # Convert flat criteria format to nested dictionary format if needed
+        self.criteria = {}
+        for key, value in raw_criteria.items():
+            if isinstance(value, (int, float)):
+                # Convert flat format (weight only) to nested dictionary
+                self.criteria[key] = {
+                    "description": self._get_default_description(key),
+                    "weight": float(value)
+                }
+            else:
+                # Already in nested dictionary format
+                self.criteria[key] = value
         
         # Calculate total weight to ensure proper normalization
         total_weight = sum(c.get("weight", 0.0) for c in self.criteria.values())
@@ -61,6 +58,26 @@ class RankingAgent(BaseAgent):
             logger.warning(f"Criteria weights do not sum to 1.0 (sum: {total_weight}). Normalizing.")
             for criterion in self.criteria:
                 self.criteria[criterion]["weight"] /= total_weight
+        
+    def _get_default_description(self, criterion: str) -> str:
+        """
+        Get default description for a criterion.
+        
+        Args:
+            criterion: Name of the criterion
+            
+        Returns:
+            Default description
+        """
+        descriptions = {
+            "novelty": "Degree to which the hypothesis offers new ideas or approaches",
+            "plausibility": "Scientific plausibility and grounding in established knowledge",
+            "testability": "Ease of empirical testing and falsifiability",
+            "impact": "Potential scientific or practical impact if validated",
+            "alignment": "Alignment with the research goal and context",
+            # Add more default descriptions as needed
+        }
+        return descriptions.get(criterion, f"Evaluation of {criterion}")
         
     async def execute(self, context: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """

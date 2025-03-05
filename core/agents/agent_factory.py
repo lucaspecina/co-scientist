@@ -60,13 +60,13 @@ class AgentFactory:
     def create_agent(cls, 
                   agent_type: str, 
                   config: Dict[str, Any],
-                  model_factory: ModelFactory) -> BaseAgent:
+                  model_factory: 'ModelFactory') -> BaseAgent:
         """
         Create an agent instance of the specified type.
         
         Args:
             agent_type: Type of agent to create
-            config: Configuration dictionary for the agent
+            config: Configuration for the agent
             model_factory: ModelFactory instance for creating models
             
         Returns:
@@ -90,25 +90,29 @@ class AgentFactory:
         # Get the agent class
         agent_class = cls._agent_registry[agent_type]
         
-        # Get model configuration
-        model_config = config.get("model", {})
+        # Create the model instance using model_provider from agent config
+        model_provider = config.get("model_provider", "default")
         
-        # Create the model instance
-        model = model_factory.create_model(model_config)
-        
-        # Create the agent instance
-        agent = agent_class(model, config)
-        
-        # Cache the instance
-        cls._agent_cache[cache_key] = agent
-        
-        logger.info(f"Created agent instance of type: {agent_type}")
-        return agent
+        try:
+            # Use the model factory to create a model for this agent
+            model = model_factory.create_model_for_agent(agent_type, config)
+            
+            # Create the agent instance
+            agent = agent_class(model, config)
+            
+            # Cache the instance
+            cls._agent_cache[cache_key] = agent
+            
+            logger.info(f"Created agent instance of type: {agent_type} with provider: {model_provider}")
+            return agent
+        except Exception as e:
+            logger.error(f"Error creating agent {agent_type}: {e}")
+            raise
     
     @classmethod
     def create_all_agents(cls, 
                        config: Dict[str, Any],
-                       model_factory: ModelFactory) -> Dict[str, BaseAgent]:
+                       model_factory: 'ModelFactory') -> Dict[str, BaseAgent]:
         """
         Create all configured agent instances.
         
@@ -125,9 +129,15 @@ class AgentFactory:
         for agent_type, agent_config in agent_configs.items():
             if agent_type in cls._agent_registry:
                 try:
+                    # Create a merged config with agent-specific settings
+                    merged_config = agent_config.copy()
+                    
+                    # Add reference to global config sections that might be needed
+                    merged_config["_global_config"] = config
+                    
                     agents[agent_type] = cls.create_agent(
                         agent_type=agent_type,
-                        config=agent_config,
+                        config=merged_config,
                         model_factory=model_factory
                     )
                 except Exception as e:

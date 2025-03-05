@@ -112,21 +112,40 @@ class ModelFactory:
         Returns:
             Configured BaseModel instance for the agent
         """
-        # Get the provider specified for this agent type, falling back to defaults
-        agent_config = config.get("agents", {}).get(agent_type, {})
-        provider = agent_config.get("model_provider", "default")
+        # Get the model provider from the agent config
+        model_provider = config.get("model_provider", "default")
         
-        # Copy the config to avoid modifying the original
-        model_config = dict(config)
+        # Access the global config if available, otherwise use the config as is
+        global_config = config.get("_global_config", {})
+        
+        # Create a new model config
+        model_config = {}
+        
+        # Get provider-specific config
+        if model_provider != "default" and model_provider in global_config.get("models", {}):
+            provider_config = global_config.get("models", {}).get(model_provider, {})
+            model_config.update(provider_config)
+        
+        # If model_provider is "default", use the default provider from global config
+        if model_provider == "default":
+            model_provider = global_config.get("models", {}).get("default_provider", "openai")
         
         # Set the provider in the config
-        model_config["provider"] = provider
+        model_config["provider"] = model_provider
         
-        # Override model settings with agent-specific settings if provided
+        # Add global defaults
+        model_config["default_provider"] = global_config.get("models", {}).get("default_provider", "openai")
+        
+        # Override with agent-specific settings
         for key in ["temperature", "max_tokens"]:
-            if key in agent_config:
-                model_config[key] = agent_config[key]
+            if key in config:
+                model_config[key] = config[key]
         
+        # Add any additional settings passed
+        for k, v in config.items():
+            if k not in ["_global_config", "count", "prompt_template"] and k not in model_config:
+                model_config[k] = v
+                
         return ModelFactory.create_model(model_config)
     
     @classmethod
@@ -228,6 +247,23 @@ class ModelFactory:
             Dictionary of model statistics
         """
         return cls._model_stats
+    
+    @classmethod
+    def get_available_models(cls) -> Dict[str, str]:
+        """
+        Get available model providers.
+        
+        Returns:
+            Dictionary mapping provider names to their module paths
+        """
+        # Combine built-in providers with registered custom providers
+        available_models = {provider: path for provider, path in MODEL_PROVIDER_MAP.items()}
+        
+        # Add registered custom models
+        for provider, model_class in cls.registered_models.items():
+            available_models[provider] = model_class.__name__
+            
+        return available_models
     
     @classmethod
     def clear_cache(cls) -> None:

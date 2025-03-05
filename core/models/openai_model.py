@@ -45,7 +45,13 @@ class OpenAIModel(BaseModel):
         self.temperature = temperature
         self.timeout = timeout
         
-        self.client = AsyncOpenAI(api_key=self.api_key, timeout=timeout)
+        # Initialize the client with only the supported parameters
+        try:
+            self.client = AsyncOpenAI(api_key=self.api_key, timeout=timeout)
+        except TypeError as e:
+            logger.warning(f"Error initializing OpenAI client with timeout: {e}")
+            # Try without timeout if that parameter is not supported
+            self.client = AsyncOpenAI(api_key=self.api_key)
     
     async def generate(self, 
                       prompt: str, 
@@ -141,6 +147,45 @@ class OpenAIModel(BaseModel):
             raise ValueError(f"Model did not return valid JSON: {e}")
         except Exception as e:
             logger.error(f"Error generating JSON response from OpenAI: {e}")
+            raise
+    
+    async def generate_json(self, 
+                          prompt: str, 
+                          schema: Dict[str, Any],
+                          system_prompt: Optional[str] = None,
+                          temperature: Optional[float] = None,
+                          default: Optional[Dict[str, Any]] = None,
+                          **kwargs) -> Dict[str, Any]:
+        """
+        Generate JSON output from the model.
+        
+        Args:
+            prompt: User prompt to generate from
+            schema: JSON schema that the output should conform to
+            system_prompt: System prompt (instructions for the model)
+            temperature: Sampling temperature (0.0 to 1.0)
+            default: Default JSON to return if generation fails
+            **kwargs: Additional model-specific parameters
+            
+        Returns:
+            JSON output as a Python dictionary
+            
+        Raises:
+            ModelError: If generation fails and no default is provided
+        """
+        try:
+            return await self.generate_with_json_output(
+                prompt=prompt,
+                json_schema=schema,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                **kwargs
+            )
+        except Exception as e:
+            logger.error(f"Error in generate_json: {e}")
+            if default is not None:
+                logger.warning(f"Returning default JSON due to error: {e}")
+                return default
             raise
     
     async def embed(self, text: Union[str, List[str]]) -> Union[List[float], List[List[float]]]:
