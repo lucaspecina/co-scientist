@@ -1,0 +1,204 @@
+# Scientific Research Configuration for AI Co-Scientist
+# Optimized for rigorous scientific hypothesis generation and testing
+
+system:
+  debug: false
+  log_level: "INFO"
+  max_iterations: 4
+  tournament_size: 10
+  top_hypotheses_count: 5  # Increased for more diverse options
+
+# Model configuration
+models:
+  default_provider: "openai"  # Default to most powerful model, with fallbacks
+  
+  openai:
+    model_name: "gpt-4-turbo"
+    api_key: ""  # Set via environment variable OPENAI_API_KEY
+    max_tokens: 4096
+    temperature: 0.5  # Lower temperature for more focused scientific reasoning
+  
+  anthropic:
+    model_name: "claude-3-opus-20240229"
+    api_key: ""  # Set via environment variable ANTHROPIC_API_KEY
+    max_tokens: 4096
+    temperature: 0.5
+  
+  google:
+    model_name: "gemini-pro"
+    api_key: ""  # Set via environment variable GOOGLE_API_KEY
+    max_tokens: 8192
+    temperature: 0.5
+  
+  ollama:
+    model_name: "llama3"
+    api_base: "http://localhost:11434"
+    max_tokens: 2048
+    temperature: 0.6
+    timeout: 180  # Extended timeout for complex scientific reasoning
+
+# Agent configuration - optimized for scientific research
+agents:
+  generation:
+    count: 2  # Multiple generation agents for diversity
+    prompt_template: "templates/generation_agent.txt"
+    model_provider: "default"
+    temperature: 0.7  # Slightly higher for creative hypotheses
+    generation_count: 8  # Generate more initial hypotheses
+    creativity: 0.8
+    constraints_weight: 0.6  # Balance between creativity and constraints
+  
+  reflection:
+    count: 3  # More reflection agents for thorough evaluation
+    prompt_template: "templates/reflection_agent.txt"
+    model_provider: "default"
+    temperature: 0.3  # Lower for critical evaluation
+    detail_level: "high"  # Detailed critique
+    min_strengths: 3
+    min_weaknesses: 4
+  
+  ranking:
+    count: 1
+    prompt_template: "templates/ranking_agent.txt"
+    model_provider: "default"
+    temperature: 0.2  # Low temperature for consistent rankings
+    criteria:
+      novelty: 0.25        # How original the hypothesis is
+      plausibility: 0.30   # How well-grounded in existing knowledge
+      testability: 0.25    # How feasible to test experimentally
+      impact: 0.15         # Potential significance if true
+      specificity: 0.05    # Clarity of proposed mechanisms
+  
+  evolution:
+    count: 2  # Multiple evolution agents for diverse approaches
+    prompt_template: "templates/evolution_agent.txt"
+    model_provider: "default"
+    temperature: 0.6
+    evolution_count: 3  # Number of refined versions per hypothesis
+    creativity_level: 0.7
+    mutation_strength: 0.5  # How much to change from original
+  
+  proximity:
+    count: 1
+    prompt_template: "templates/proximity_agent.txt"
+    model_provider: "default"
+    temperature: 0.4
+    max_papers: 15        # Increased literature search
+    search_depth: "deep"  # More thorough search
+    evidence_threshold: 0.7
+    sources: ["pubmed", "arxiv", "semantic_scholar", "crossref"]
+    search_queries_per_hypothesis: 5
+    min_papers_per_hypothesis: 8
+  
+  meta_review:
+    count: 1
+    prompt_template: "templates/meta_review_agent.txt"
+    model_provider: "default"
+    temperature: 0.4
+    output_format: "detailed"
+    include_experiments: true
+    experiment_detail_level: "high"
+    include_resource_estimates: true
+    include_alternative_approaches: true
+
+# Domain-specific configurations
+domains:
+  biochemistry:
+    proximity:
+      sources: ["pubmed", "biorxiv", "pdb", "uniprot"]
+      specialized_tools: ["alphafold", "chembl"]
+  
+  neuroscience:
+    proximity:
+      sources: ["pubmed", "biorxiv", "neurodata"]
+      specialized_tools: ["brainmap", "allen_brain_atlas"]
+  
+  physics:
+    proximity:
+      sources: ["arxiv", "nasa_ads"]
+      specialized_tools: ["wolfram_alpha"]
+
+# Task execution configuration
+execution:
+  queue_backend: "redis"
+  redis:
+    host: "localhost"
+    port: 6379
+    db: 0
+  timeout: 600  # Extended timeout for scientific reasoning
+  retry_limit: 3
+  parallel_tasks: 6  # More parallel processing
+
+# Memory configuration
+memory:
+  backend: "mongodb"
+  mongodb:
+    uri: "mongodb://localhost:27017/"
+    db_name: "co_scientist"
+  retention_period: 90  # Longer retention for scientific projects
+  store_intermediate_results: true
+  version_hypotheses: true  # Track hypothesis evolution
+
+# Tool configuration
+tools:
+  web_search:
+    enabled: true
+    provider: "google"
+    api_key: ""
+    max_results: 10
+  
+  literature_search:
+    enabled: true
+    pubmed:
+      enabled: true
+      email: "user@example.com"
+      max_results: 20
+    arxiv:
+      enabled: true
+      max_results: 20
+    semantic_scholar:
+      enabled: true
+      api_key: ""
+      max_results: 20
+    crossref:
+      enabled: true
+      max_results: 15
+  
+  citation_management:
+    enabled: true
+    default_style: "apa"
+    available_styles: ["apa", "mla", "chicago", "harvard", "ieee", "nature", "science", "bibtex"]
+  
+  domain_tools:
+    # Configure domain-specific tools here
+    biochemistry:
+      enabled: true
+      tools: ["protein_structure", "pathway_analysis", "compound_interaction"]
+    
+    neuroscience:
+      enabled: true
+      tools: ["brain_connectivity", "neurotransmitter_analysis"]
+    
+    physics:
+      enabled: true
+      tools: ["equation_solver", "simulation"]
+
+# Experimentation configuration
+experimentation:
+  enabled: true
+  detail_levels:
+    low: "basic methodology outline"
+    medium: "detailed protocol"
+    high: "comprehensive design with controls and variants"
+  
+  components:
+    methods: true
+    controls: true
+    expected_outcomes: true
+    alternative_outcomes: true
+    resources: true
+    timeline: true
+    challenges: true
+  
+  ethical_review: true
+  cost_estimation: true 

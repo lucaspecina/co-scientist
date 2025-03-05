@@ -1,0 +1,2 @@
+@echo off
+python main.py create --goal "Develop a novel solution to the ARC-AGI benchmark" --domain "artificial-intelligence" --background "This research aims to solve the ARC-AGI benchmark through program synthesis, deep learning, and test-time scaling." 

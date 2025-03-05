@@ -1,0 +1,119 @@
+# Azure OpenAI Configuration for AI Co-Scientist
+# This configuration uses Azure OpenAI services
+
+system:
+  debug: true
+  log_level: "INFO"
+  max_iterations: 5
+  tournament_size: 8
+  top_hypotheses_count: 3
+
+# Model configuration
+models:
+  default_provider: "azure_openai"  # Using Azure OpenAI as the default provider
+  
+  azure_openai:
+    deployment_id: "co-scientist-gpt-4o-mini"  # Your Azure OpenAI deployment ID for completions
+    embedding_deployment: "text-embedding-ada-002"  # Your Azure OpenAI deployment ID for embeddings
+    api_key: ""  # Set via environment variable AZURE_OPENAI_API_KEY
+    api_version: ""  # Set via environment variable AZURE_OPENAI_API_VERSION
+    endpoint: ""  # Set via environment variable AZURE_OPENAI_ENDPOINT
+    max_tokens: 4096
+    temperature: 0.7
+    timeout: 60  # Timeout in seconds
+  
+  # Fallback to other providers if needed
+  openai:
+    model_name: "gpt-4o"
+    api_key: ""  # Set via environment variable OPENAI_API_KEY
+    max_tokens: 4096
+    temperature: 0.7
+  
+  anthropic:
+    model_name: "claude-3-opus-20240229"
+    api_key: ""  # Set via environment variable ANTHROPIC_API_KEY
+    max_tokens: 4096
+    temperature: 0.7
+  
+  ollama:
+    model_name: "llama3"
+    api_base: "http://localhost:11434"
+    max_tokens: 2048
+    temperature: 0.7
+    timeout: 120
+
+# Agent configuration - all agents will use Azure OpenAI by default
+agents:
+  generation:
+    count: 1
+    prompt_template: "templates/generation_agent.txt"
+    model_provider: "default"  # Will use Azure OpenAI since it's the default
+    temperature: 0.8  # Override default temperature
+  
+  reflection:
+    count: 2
+    prompt_template: "templates/reflection_agent.txt"
+    model_provider: "default"
+  
+  ranking:
+    count: 1
+    prompt_template: "templates/ranking_agent.txt"
+    model_provider: "default"
+    criteria:
+      novelty: 0.3
+      plausibility: 0.4
+      testability: 0.2
+      alignment: 0.1
+  
+  evolution:
+    count: 1
+    prompt_template: "templates/evolution_agent.txt"
+    model_provider: "default"
+  
+  proximity:
+    count: 1
+    prompt_template: "templates/proximity_agent.txt"
+    model_provider: "default"
+    similarity_threshold: 0.8
+  
+  meta_review:
+    count: 1
+    prompt_template: "templates/meta_review_agent.txt"
+    model_provider: "default"
+
+# Task execution configuration
+execution:
+  queue_backend: "redis"
+  redis:
+    host: "localhost"
+    port: 6379
+    db: 0
+  timeout: 300  # seconds
+  retry_limit: 3
+  parallel_tasks: 4
+
+# Memory configuration
+memory:
+  backend: "filesystem"
+  filesystem:
+    base_dir: "sessions"
+  retention_period: 30  # days
+
+# Tool configuration
+tools:
+  web_search:
+    enabled: true
+    provider: "google"
+    api_key: ""
+    max_results: 5
+  
+  pubmed:
+    enabled: true
+    email: "user@example.com"
+    max_results: 10
+
+# UI configuration
+ui:
+  api_port: 8000
+  cors_origins: ["http://localhost:3000"]
+  auth_enabled: false 
