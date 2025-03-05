@@ -1,0 +1,5 @@
+{
+  "goal": "Develop a novel solution to the ARC-AGI benchmark by combining program synthesis with deep learning models and test-time scaling techniques",
+  "background": "This research aims to solve the ARC-AGI benchmark by: 1) Designing a domain-specific language for expressing ARC transformations, 2) Using neural models to guide program synthesis search, 3) Implementing efficient test-time scaling to verify candidate solutions, and 4) Creating a modular system with perception, reasoning, and verification components. The approach will focus on abstraction capabilities rather than memorization, with the goal of achieving high accuracy within the ARC Prize competition constraints.",
+  "domain": "artificial-intelligence"
+} 

@@ -45,13 +45,13 @@ class OpenAIModel(BaseModel):
         self.temperature = temperature
         self.timeout = timeout
         
-        # Initialize the client with only the supported parameters
+        # Initialize the client with only the supported parameters for version 1.3.3
         try:
-            self.client = AsyncOpenAI(api_key=self.api_key, timeout=timeout)
-        except TypeError as e:
-            logger.warning(f"Error initializing OpenAI client with timeout: {e}")
-            # Try without timeout if that parameter is not supported
+            # The AsyncOpenAI in version 1.3.3 doesn't support 'proxies' parameter
             self.client = AsyncOpenAI(api_key=self.api_key)
+        except TypeError as e:
+            logger.warning(f"Error initializing OpenAI client: {e}")
+            self.client = None
     
     async def generate(self, 
                       prompt: str, 

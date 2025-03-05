@@ -58,10 +58,11 @@ class CoScientistCLI:
         
         # Create session command
         create_parser = subparsers.add_parser("create", help="Create a new research session")
-        create_parser.add_argument("--goal", type=str, required=True, help="Research goal description")
-        create_parser.add_argument("--domain", type=str, required=True, help="Scientific domain")
+        create_parser.add_argument("--goal", type=str, help="Research goal description")
+        create_parser.add_argument("--domain", type=str, help="Scientific domain")
         create_parser.add_argument("--background", type=str, help="Background information")
         create_parser.add_argument("--constraints", type=str, nargs="+", help="Research constraints")
+        create_parser.add_argument("--json", type=str, help="Path to JSON file with research parameters")
         
         # Run session command
         run_parser = subparsers.add_parser("run", help="Run a research session")
@@ -150,6 +151,27 @@ class CoScientistCLI:
         background = self.args.background or ""
         constraints = self.args.constraints or []
         
+        # Check if JSON file is provided
+        if self.args.json:
+            try:
+                with open(self.args.json, 'r') as f:
+                    params = json.load(f)
+                    goal = params.get('goal', goal)
+                    domain = params.get('domain', domain)
+                    background = params.get('background', background)
+                    constraints = params.get('constraints', constraints)
+            except Exception as e:
+                print(f"Error loading JSON file: {str(e)}")
+                sys.exit(1)
+        
+        # Validate required arguments
+        if not goal:
+            print("Error: Research goal is required")
+            sys.exit(1)
+        if not domain:
+            print("Error: Scientific domain is required")
+            sys.exit(1)
+        
         # Create session
         try:
             session_id = await self.controller.create_session(
@@ -158,10 +180,9 @@ class CoScientistCLI:
                 background=background,
                 constraints=constraints
             )
-            print(f"Session created successfully!")
+            print("Session created successfully!")
             print(f"Session ID: {session_id}")
             print(f"Run the session with: python main.py run --session {session_id}")
-            
         except Exception as e:
             print(f"Error creating session: {str(e)}")
             sys.exit(1)
