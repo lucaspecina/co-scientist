@@ -1,28 +1,28 @@
-# Default configuration for AI Co-Scientist
+# Azure OpenAI Configuration for AI Co-Scientist
+# This configuration uses Azure OpenAI services
 
 system:
   debug: true
-  log_level: "DEBUG"
+  log_level: "INFO"
   max_iterations: 5
   tournament_size: 8
   top_hypotheses_count: 3
 
 # Model configuration
 models:
-  default_provider: "azure_openai"  # Changed from "openai" to "azure_openai"
+  default_provider: "azure_openai"  # Using Azure OpenAI as the default provider
   
-  # Azure OpenAI configuration
   azure_openai:
     deployment_id: "co-scientist-gpt-4o-mini"  # Your Azure OpenAI deployment ID for completions
     embedding_deployment: "text-embedding-ada-002"  # Your Azure OpenAI deployment ID for embeddings
-    # The following values are loaded from environment variables:
-    # api_key: From AZURE_OPENAI_API_KEY
-    # api_version: From AZURE_OPENAI_API_VERSION
-    # endpoint: From AZURE_OPENAI_ENDPOINT
+    api_key: ""  # Set via environment variable AZURE_OPENAI_API_KEY
+    api_version: ""  # Set via environment variable AZURE_OPENAI_API_VERSION
+    endpoint: ""  # Set via environment variable AZURE_OPENAI_ENDPOINT
     max_tokens: 4096
     temperature: 0.7
     timeout: 60  # Timeout in seconds
   
+  # Fallback to other providers if needed
   openai:
     model_name: "gpt-4o"
     api_key: ""  # Set via environment variable OPENAI_API_KEY
@@ -35,41 +35,23 @@ models:
     max_tokens: 4096
     temperature: 0.7
   
-  google:
-    model_name: "gemini-pro"
-    api_key: ""  # Set via environment variable GOOGLE_API_KEY
-    max_tokens: 8192
-    temperature: 0.7
-  
-  huggingface:
-    model_name: "mistralai/Mistral-7B-Instruct-v0.2"
-    api_key: ""  # Set via environment variable HF_API_KEY
-    max_tokens: 2048
-    temperature: 0.7
-  
-  local:
-    model_path: "models/local_model"
-    device: "cuda"  # or "cpu"
-    max_tokens: 2048
-    temperature: 0.7
-    
   ollama:
-    model_name: "llama3"  # Default model, users can change to any model available in their Ollama instance
-    api_base: "http://localhost:11434"  # Default Ollama API endpoint
+    model_name: "llama3"
+    api_base: "http://localhost:11434"
     max_tokens: 2048
     temperature: 0.7
-    timeout: 120  # Timeout in seconds
+    timeout: 120
 
-# Agent configuration - now using "default" which will resolve to azure_openai
+# Agent configuration - all agents will use Azure OpenAI by default
 agents:
   generation:
-    count: 1  # Number of parallel generation agents
+    count: 1
     prompt_template: "templates/generation_agent.txt"
-    model_provider: "default"  # Will use azure_openai
+    model_provider: "default"  # Will use Azure OpenAI since it's the default
     temperature: 0.8  # Override default temperature
   
   reflection:
-    count: 2  # Number of parallel reflection agents
+    count: 2
     prompt_template: "templates/reflection_agent.txt"
     model_provider: "default"
   
@@ -101,50 +83,34 @@ agents:
 
 # Task execution configuration
 execution:
-  queue_backend: "redis"  # Options: redis, rabbitmq
+  queue_backend: "redis"
   redis:
     host: "localhost"
     port: 6379
     db: 0
-  rabbitmq:
-    host: "localhost"
-    port: 5672
-    user: "guest"
-    password: "guest"
   timeout: 300  # seconds
   retry_limit: 3
   parallel_tasks: 4
 
 # Memory configuration
 memory:
-  backend: "file_system"  # Options: mongodb, file_system, in_memory
-  mongodb:
-    uri: "mongodb://localhost:27017/"
-    db_name: "co_scientist"
+  backend: "filesystem"
+  filesystem:
+    base_dir: "sessions"
   retention_period: 30  # days
 
 # Tool configuration
 tools:
   web_search:
     enabled: true
-    provider: "google"  # Options: google, bing, ddg
-    api_key: ""  # Set via environment variable SEARCH_API_KEY
+    provider: "google"
+    api_key: ""
     max_results: 5
-  
-  alphafold:
-    enabled: false
-    api_endpoint: "https://alphafold.example.com/api"
-    api_key: ""  # Set via environment variable ALPHAFOLD_API_KEY
   
   pubmed:
     enabled: true
-    email: "user@example.com"  # Required for PubMed API
+    email: "user@example.com"
     max_results: 10
-  
-  custom_tool_template:
-    enabled: false
-    api_endpoint: ""
-    api_key: ""
 
 # UI configuration
 ui:

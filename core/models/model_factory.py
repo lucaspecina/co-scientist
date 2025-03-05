@@ -7,7 +7,9 @@ different LLM providers.
 """
 
 import importlib
+import json
 import logging
+import os
 import time
 from typing import Dict, Any, Optional, List, Tuple, Callable
 
@@ -18,6 +20,7 @@ logger = logging.getLogger(__name__)
 # Map provider names to their module paths
 MODEL_PROVIDER_MAP = {
     "openai": "core.models.openai_model.OpenAIModel",
+    "azure_openai": "core.models.azure_openai_model.AzureOpenAIModel",
     "anthropic": "core.models.anthropic_model.AnthropicModel",
     "google": "core.models.google_model.GoogleModel",
     "huggingface": "core.models.huggingface_model.HuggingFaceModel",
@@ -56,10 +59,50 @@ class ModelFactory:
         # Get the provider name, defaulting to the default_provider if specific provider not given
         provider = config.get("provider")
         if provider == "default" or provider is None:
-            provider = config.get("default_provider", "openai")
+            provider = config.get("default_provider", "azure_openai")
+        
+        # Special handling for Azure OpenAI - extract credentials from environment variables
+        if provider == "azure_openai":
+            # Get environment variables
+            api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+            api_version = os.environ.get("AZURE_OPENAI_API_VERSION")
+            endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+            deployment_name = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
+            
+            # Create a properly structured config for Azure OpenAI
+            azure_config = {
+                "api_key": api_key,
+                "api_version": api_version,
+                "endpoint": endpoint,
+                "deployment_id": deployment_name
+            }
+            
+            # Get additional configuration from models.azure_openai if available
+            if "models" in config and "azure_openai" in config["models"]:
+                azure_model_config = config["models"]["azure_openai"]
+                # Use values from config if not set by environment variables
+                if not api_key and "api_key" in azure_model_config:
+                    azure_config["api_key"] = azure_model_config["api_key"]
+                if not api_version and "api_version" in azure_model_config:
+                    azure_config["api_version"] = azure_model_config["api_version"]
+                if not endpoint and "endpoint" in azure_model_config:
+                    azure_config["endpoint"] = azure_model_config["endpoint"]
+                if not deployment_name and "deployment_id" in azure_model_config:
+                    azure_config["deployment_id"] = azure_model_config["deployment_id"]
+                
+                # Copy over other configuration parameters
+                for key, value in azure_model_config.items():
+                    if key not in azure_config:
+                        azure_config[key] = value
+            
+            # Use the Azure config
+            config_to_use = azure_config
+        else:
+            # For other providers, use the config as is
+            config_to_use = config
         
         # Create a cache key based on the provider and relevant configuration
-        cache_key = ModelFactory._create_cache_key(provider, config)
+        cache_key = ModelFactory._create_cache_key(provider, config_to_use)
         
         # Check if we have a cached instance
         if cache_key in ModelFactory._model_cache:
@@ -84,7 +127,7 @@ class ModelFactory:
         
         # Create and return the model instance
         try:
-            model = model_class.from_config(config)
+            model = model_class.from_config(config_to_use)
             # Cache the model instance
             ModelFactory._model_cache[cache_key] = model
             # Initialize stats for this model
@@ -97,7 +140,7 @@ class ModelFactory:
             }
             return model
         except Exception as e:
-            logger.error(f"Error creating model instance for provider {provider}: {e}")
+            logger.error(f"Error creating model instance for provider {provider}: {str(e)}")
             raise
     
     @staticmethod
@@ -128,13 +171,13 @@ class ModelFactory:
         
         # If model_provider is "default", use the default provider from global config
         if model_provider == "default":
-            model_provider = global_config.get("models", {}).get("default_provider", "openai")
+            model_provider = global_config.get("models", {}).get("default_provider", "azure_openai")
         
         # Set the provider in the config
         model_config["provider"] = model_provider
         
         # Add global defaults
-        model_config["default_provider"] = global_config.get("models", {}).get("default_provider", "openai")
+        model_config["default_provider"] = global_config.get("models", {}).get("default_provider", "azure_openai")
         
         # Override with agent-specific settings
         for key in ["temperature", "max_tokens"]:
@@ -179,16 +222,20 @@ class ModelFactory:
         Raises:
             ValueError: If all providers fail
         """
-        primary_provider = config.get("provider", config.get("default_provider", "openai"))
+        primary_provider = config.get("provider", config.get("default_provider", "azure_openai"))
         
         # If no fallbacks specified, use the default fallback order
         if fallback_providers is None:
             # Start with all available providers, remove the primary, and prioritize based on reliability
             fallback_providers = [p for p in MODEL_PROVIDER_MAP.keys() if p != primary_provider]
+            # Prioritize OpenAI as first fallback after Azure OpenAI
+            if "openai" in fallback_providers:
+                fallback_providers.remove("openai")
+                fallback_providers.insert(0, "openai")
             if "ollama" in fallback_providers:
-                # Prioritize Ollama as first fallback since it's local and reliable
+                # Prioritize Ollama after OpenAI since it's local and reliable
                 fallback_providers.remove("ollama")
-                fallback_providers.insert(0, "ollama")
+                fallback_providers.insert(1, "ollama")
         
         # Try the primary provider first
         providers_to_try = [primary_provider] + fallback_providers
@@ -300,4 +347,4 @@ class ModelFactory:
             api_base = provider_config.get("api_base", "http://localhost:11434")
             return f"{provider}:{model_name}:{api_base}"
             
-        return f"{provider}:{model_name}" 
+        return f"{provider}:{model_name}"
