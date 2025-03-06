@@ -3,10 +3,13 @@ Ranking Agent for AI Co-Scientist
 
 This module implements the Ranking Agent, which evaluates and scores research
 hypotheses based on multiple criteria to identify the most promising ones.
+It implements an Elo-based tournament system for pairwise comparison of hypotheses.
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+import random
+import math
+from typing import Dict, Any, List, Optional, Tuple, Set
 
 from .base_agent import BaseAgent, AgentExecutionError
 
@@ -15,10 +18,12 @@ logger = logging.getLogger(__name__)
 
 class RankingAgent(BaseAgent):
     """
-    Ranking Agent evaluates and scores research hypotheses.
+    Ranking Agent evaluates and scores research hypotheses using an Elo-based tournament.
     
-    This agent applies consistent evaluation criteria across all hypotheses
-    to produce a ranked list based on their potential scientific value.
+    This agent organizes pairwise comparisons between hypotheses in tournament matches,
+    employing multi-turn scientific debates for top-ranked hypotheses and simpler 
+    comparisons for lower-ranked ones. The resulting Elo ratings provide a ranking
+    of hypotheses based on their scientific merit.
     """
     
     def __init__(self, model, config: Dict[str, Any]):
@@ -48,16 +53,19 @@ class RankingAgent(BaseAgent):
                     "description": self._get_default_description(key),
                     "weight": float(value)
                 }
-            else:
-                # Already in nested dictionary format
-                self.criteria[key] = value
+            elif isinstance(value, dict):
+                # Already in nested format, just ensure it has the right structure
+                self.criteria[key] = {
+                    "description": value.get("description", self._get_default_description(key)),
+                    "weight": float(value.get("weight", 1.0))
+                }
         
-        # Calculate total weight to ensure proper normalization
-        total_weight = sum(c.get("weight", 0.0) for c in self.criteria.values())
-        if abs(total_weight - 1.0) > 0.01:  # Allow for small floating point errors
-            logger.warning(f"Criteria weights do not sum to 1.0 (sum: {total_weight}). Normalizing.")
-            for criterion in self.criteria:
-                self.criteria[criterion]["weight"] /= total_weight
+        # Elo rating system parameters
+        self.initial_elo = config.get("initial_elo", 1200)
+        self.elo_k_factor = config.get("elo_k_factor", 32)  # Determines rating change magnitude
+        self.tournament_matches = config.get("tournament_matches", 5)  # Matches per hypothesis
+        self.debate_turns = config.get("debate_turns", 3)  # Number of debate turns for top hypotheses
+        self.full_debate_threshold = config.get("xfull_debate_threshold", 0.25)  # Top % for full debates
         
     def _get_default_description(self, criterion: str) -> str:
         """
@@ -81,7 +89,7 @@ class RankingAgent(BaseAgent):
         
     async def execute(self, context: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Rank and score a set of research hypotheses.
+        Rank research hypotheses through an Elo-based tournament.
         
         Args:
             context: Dictionary containing:
@@ -89,231 +97,542 @@ class RankingAgent(BaseAgent):
                 - hypotheses: List of hypotheses to rank
                 - iteration: Current iteration number
                 - feedback: List of feedback entries (optional)
-            params: Dictionary containing optional configuration overrides
+                - proximity_graph: Hypothesis similarity graph (optional)
+                - previous_elo_ratings: Previous Elo ratings (optional)
+            params: Dictionary containing:
+                - match_count: Number of tournament matches to run (optional)
+                - tournament_type: Type of tournament ("full", "incremental")
                 
         Returns:
             Dictionary containing:
-                - ranked_hypotheses: List of hypotheses with scores
-                - ranking_explanation: Explanation of the ranking rationale
-                - top_hypotheses: List of top hypothesis IDs
+                - ranked_hypotheses: List of hypotheses with updated Elo ratings
+                - tournament_results: Details of tournament matches conducted
         """
-        # Extract parameters
         goal = context.get("goal", {})
         hypotheses = context.get("hypotheses", [])
-        
-        if not goal or not hypotheses:
-            raise AgentExecutionError("Research goal and hypotheses are required for ranking")
-        
-        if len(hypotheses) == 0:
-            raise AgentExecutionError("At least one hypothesis is required for ranking")
-            
-        # Extract optional parameters
         iteration = context.get("iteration", 0)
         feedback = context.get("feedback", [])
+        proximity_graph = context.get("proximity_graph", {})
+        previous_elo_ratings = context.get("previous_elo_ratings", {})
         
-        # Create a JSON schema for the expected output
-        output_schema = {
-            "type": "object",
-            "properties": {
-                "ranked_hypotheses": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {
-                                "type": "string",
-                                "description": "ID of the hypothesis"
-                            },
-                            "overall_score": {
-                                "type": "number",
-                                "description": "Overall score (0.0-10.0)"
-                            },
-                            "criteria_scores": {
-                                "type": "object",
-                                "description": "Scores for individual criteria (0.0-10.0)",
-                                "additionalProperties": {
-                                    "type": "number"
-                                }
-                            },
-                            "ranking_rationale": {
-                                "type": "string",
-                                "description": "Rationale for the scores"
-                            }
-                        },
-                        "required": ["id", "overall_score", "criteria_scores", "ranking_rationale"]
-                    }
-                },
-                "ranking_explanation": {
-                    "type": "string",
-                    "description": "Overall explanation of the ranking process"
-                },
-                "top_hypotheses": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "description": "ID of a top hypothesis"
-                    },
-                    "description": "IDs of the top 3 hypotheses"
-                }
-            },
-            "required": ["ranked_hypotheses", "ranking_explanation", "top_hypotheses"]
-        }
+        # Extract parameters
+        match_count = params.get("match_count", self.tournament_matches)
+        tournament_type = params.get("tournament_type", "incremental")
         
-        # Build the prompt
-        prompt = self._build_ranking_prompt(
-            goal=goal,
-            hypotheses=hypotheses,
-            criteria=self.criteria,
-            iteration=iteration,
-            feedback=feedback
-        )
-        
-        # Call the model
-        system_prompt = self._build_system_prompt()
+        if not hypotheses:
+            logger.warning("No hypotheses provided for ranking")
+            return {"ranked_hypotheses": [], "tournament_results": []}
         
         try:
-            response = await self._call_model(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                schema=output_schema
+            # Initialize Elo ratings
+            elo_ratings = self._initialize_elo_ratings(hypotheses, previous_elo_ratings)
+            
+            # Generate tournament matches
+            matches = self._generate_tournament_matches(
+                hypotheses, 
+                match_count, 
+                elo_ratings,
+                proximity_graph,
+                tournament_type
             )
             
-            # Process the response
-            ranked_hypotheses = response.get("ranked_hypotheses", [])
-            ranking_explanation = response.get("ranking_explanation", "")
-            top_hypotheses = response.get("top_hypotheses", [])
+            # Run the tournament
+            tournament_results = await self._run_tournament(
+                matches, 
+                goal, 
+                elo_ratings,
+                iteration,
+                feedback
+            )
             
-            if not ranked_hypotheses:
-                logger.warning("Ranking agent returned no ranked hypotheses")
-                
-            # Build the result
-            result = {
+            # Update Elo ratings based on tournament results
+            updated_ratings = self._update_elo_ratings(elo_ratings, tournament_results)
+            
+            # Apply ratings to hypotheses
+            ranked_hypotheses = self._apply_ratings_to_hypotheses(hypotheses, updated_ratings)
+            
+            return {
                 "ranked_hypotheses": ranked_hypotheses,
-                "ranking_explanation": ranking_explanation,
-                "top_hypotheses": top_hypotheses,
-                "metadata": {
-                    "iteration": iteration,
-                    "criteria": list(self.criteria.keys()),
-                    "hypothesis_count": len(hypotheses)
-                }
+                "tournament_results": tournament_results
             }
-            
-            return result
-            
         except Exception as e:
-            logger.error(f"Ranking agent execution failed: {str(e)}")
+            logger.error(f"Error in ranking agent: {str(e)}")
             raise AgentExecutionError(f"Failed to rank hypotheses: {str(e)}")
     
-    def _build_ranking_prompt(self,
-                            goal: Dict[str, Any],
-                            hypotheses: List[Dict[str, Any]],
-                            criteria: Dict[str, Dict[str, Any]],
-                            iteration: int,
-                            feedback: List[Dict[str, Any]]) -> str:
+    def _initialize_elo_ratings(self, 
+                              hypotheses: List[Dict[str, Any]], 
+                              previous_ratings: Dict[str, float]) -> Dict[str, float]:
         """
-        Build the ranking prompt.
+        Initialize Elo ratings for all hypotheses.
         
         Args:
-            goal: Research goal dictionary
             hypotheses: List of hypotheses to rank
-            criteria: Dictionary of ranking criteria
+            previous_ratings: Previous Elo ratings by hypothesis ID
+            
+        Returns:
+            Dictionary mapping hypothesis IDs to Elo ratings
+        """
+        ratings = {}
+        
+        for hypothesis in hypotheses:
+            hypothesis_id = hypothesis.get("id")
+            
+            # If the hypothesis already has a rating, use it
+            if hypothesis_id in previous_ratings:
+                ratings[hypothesis_id] = previous_ratings[hypothesis_id]
+            else:
+                # Otherwise, assign the initial Elo rating
+                ratings[hypothesis_id] = self.initial_elo
+        
+        return ratings
+    
+    def _generate_tournament_matches(self,
+                                  hypotheses: List[Dict[str, Any]],
+                                  match_count: int,
+                                  elo_ratings: Dict[str, float],
+                                  proximity_graph: Dict[str, List[str]],
+                                  tournament_type: str) -> List[Tuple[str, str]]:
+        """
+        Generate tournament matches for hypothesis comparison.
+        
+        Args:
+            hypotheses: List of hypotheses
+            match_count: Maximum number of matches per hypothesis
+            elo_ratings: Current Elo ratings
+            proximity_graph: Hypothesis similarity graph
+            tournament_type: Type of tournament to run
+            
+        Returns:
+            List of match pairs (hypothesis1_id, hypothesis2_id)
+        """
+        hypothesis_ids = [h.get("id") for h in hypotheses]
+        
+        # Different match generation strategies
+        if tournament_type == "full":
+            # Full tournament: compare each hypothesis with every other
+            matches = []
+            for i, id1 in enumerate(hypothesis_ids):
+                for id2 in hypothesis_ids[i+1:]:
+                    matches.append((id1, id2))
+            
+            # If too many matches, randomly sample
+            if len(matches) > match_count * len(hypothesis_ids) // 2:
+                random.shuffle(matches)
+                matches = matches[:match_count * len(hypothesis_ids) // 2]
+                
+        elif tournament_type == "incremental":
+            # Incremental tournament: prioritize matches based on ratings and similarity
+            matches = []
+            matches_per_hypothesis = {}
+            
+            # Initialize match count per hypothesis
+            for h_id in hypothesis_ids:
+                matches_per_hypothesis[h_id] = 0
+            
+            # Strategy:
+            # 1. Top hypotheses should participate in more matches
+            # 2. Similar hypotheses should be more likely to be compared
+            # 3. Each hypothesis should have a minimum number of matches
+            
+            # Sort by Elo rating (descending)
+            sorted_ids = sorted(hypothesis_ids, key=lambda h_id: elo_ratings.get(h_id, 0), reverse=True)
+            
+            # First, ensure minimum matches for new hypotheses
+            new_hypotheses = [h_id for h_id in hypothesis_ids if h_id not in elo_ratings]
+            for new_id in new_hypotheses:
+                # Match with a mix of top and random hypotheses
+                candidate_opponents = sorted_ids[:5] + random.sample(hypothesis_ids, min(5, len(hypothesis_ids)))
+                # Remove self
+                candidate_opponents = [h_id for h_id in candidate_opponents if h_id != new_id]
+                
+                # Select up to 3 opponents
+                selected_opponents = candidate_opponents[:min(3, len(candidate_opponents))]
+                for opponent_id in selected_opponents:
+                    matches.append((new_id, opponent_id))
+                    matches_per_hypothesis[new_id] = matches_per_hypothesis.get(new_id, 0) + 1
+                    matches_per_hypothesis[opponent_id] = matches_per_hypothesis.get(opponent_id, 0) + 1
+            
+            # Then, prioritize matches between similar hypotheses using proximity graph
+            if proximity_graph:
+                for h_id in hypothesis_ids:
+                    if h_id in proximity_graph:
+                        similar_ids = proximity_graph[h_id]
+                        # Compare with similar hypotheses
+                        for similar_id in similar_ids:
+                            if similar_id in hypothesis_ids and similar_id != h_id:
+                                matches.append((h_id, similar_id))
+                                matches_per_hypothesis[h_id] = matches_per_hypothesis.get(h_id, 0) + 1
+                                matches_per_hypothesis[similar_id] = matches_per_hypothesis.get(similar_id, 0) + 1
+            
+            # Finally, fill in remaining matches needed
+            while sum(matches_per_hypothesis.values()) // 2 < match_count * len(hypothesis_ids) // 2:
+                # Prioritize hypotheses with fewer matches
+                candidates = sorted(hypothesis_ids, key=lambda h_id: matches_per_hypothesis.get(h_id, 0))
+                
+                if not candidates:
+                    break
+                
+                h_id = candidates[0]
+                
+                # Find suitable opponent
+                # Bias toward hypotheses with similar ratings for competitive matches
+                sorted_by_rating_diff = sorted(
+                    [opp_id for opp_id in hypothesis_ids if opp_id != h_id],
+                    key=lambda opp_id: abs(elo_ratings.get(h_id, 0) - elo_ratings.get(opp_id, 0))
+                )
+                
+                if sorted_by_rating_diff:
+                    # Select from the 5 closest ratings with some randomness
+                    pool = sorted_by_rating_diff[:min(5, len(sorted_by_rating_diff))]
+                    opponent_id = random.choice(pool)
+                    
+                    matches.append((h_id, opponent_id))
+                    matches_per_hypothesis[h_id] = matches_per_hypothesis.get(h_id, 0) + 1
+                    matches_per_hypothesis[opponent_id] = matches_per_hypothesis.get(opponent_id, 0) + 1
+                else:
+                    # No suitable opponent found
+                    break
+        
+        else:
+            # Default: Random pairing
+            matches = []
+            for _ in range(match_count):
+                if len(hypothesis_ids) < 2:
+                    break
+                
+                id1, id2 = random.sample(hypothesis_ids, 2)
+                matches.append((id1, id2))
+        
+        return matches
+    
+    async def _run_tournament(self,
+                        matches: List[Tuple[str, str]],
+                        goal: Dict[str, Any],
+                        elo_ratings: Dict[str, float],
+                        iteration: int,
+                        feedback: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Run tournament matches and determine winners.
+        
+        Args:
+            matches: List of match pairs (hypothesis1_id, hypothesis2_id)
+            goal: Research goal information
+            elo_ratings: Current Elo ratings
             iteration: Current iteration number
             feedback: List of feedback entries
             
         Returns:
-            Formatted prompt string
+            List of match results
         """
-        # Extract information
-        goal_description = goal.get("description", "")
-        domain = goal.get("domain", "")
-        constraints = goal.get("constraints", [])
+        results = []
         
-        # Build the prompt
-        prompt = f"# Research Goal\n{goal_description}\n\n"
-        
-        # Add domain if available
-        if domain:
-            prompt += f"# Domain\n{domain}\n\n"
+        # Get all hypotheses and create a lookup dictionary
+        all_hypotheses = {}
+        for hypothesis in goal.get("all_hypotheses", []):
+            all_hypotheses[hypothesis.get("id")] = hypothesis
             
-        # Add constraints if available
-        if constraints:
-            prompt += "# Constraints\n"
-            for constraint in constraints:
-                prompt += f"- {constraint}\n"
-            prompt += "\n"
-            
-        # Add evaluation criteria
-        prompt += "# Evaluation Criteria\n"
-        for criterion, details in criteria.items():
-            description = details.get("description", "")
-            weight = details.get("weight", 0.0)
-            prompt += f"- {criterion.upper()} (weight: {weight:.2f}): {description}\n"
-        prompt += "\n"
-        
-        # Add recent feedback if available
-        if feedback:
-            prompt += "# Scientist Feedback\n"
-            recent_feedback = sorted(
-                feedback, 
-                key=lambda x: x.get("iteration", 0),
+        # Determine which hypotheses get full debate treatment
+        top_hypothesis_ids = set(
+            sorted(
+                elo_ratings.keys(), 
+                key=lambda h_id: elo_ratings.get(h_id, 0), 
                 reverse=True
-            )[:2]  # Only the 2 most recent feedback entries
+            )[:int(len(elo_ratings) * self.full_debate_threshold)]
+        )
+        
+        # Run each match
+        for match_id, (id1, id2) in enumerate(matches):
+            h1 = all_hypotheses.get(id1)
+            h2 = all_hypotheses.get(id2)
             
-            for entry in recent_feedback:
-                feedback_text = entry.get("text", "")
-                feedback_iter = entry.get("iteration", 0)
+            if not h1 or not h2:
+                logger.warning(f"Skipping match {match_id}: Hypothesis not found")
+                continue
                 
-                if feedback_text:
-                    prompt += f"From iteration {feedback_iter}: {feedback_text}\n\n"
-        
-        # Add the hypotheses to evaluate
-        prompt += "# Hypotheses to Evaluate\n"
-        for i, hypothesis in enumerate(hypotheses, 1):
-            hyp_id = hypothesis.get("id", f"hyp{i}")
-            text = hypothesis.get("text", "")
-            rationale = hypothesis.get("rationale", "")
+            # Determine match type: Full debate for top hypotheses, simple for others
+            is_top_match = id1 in top_hypothesis_ids or id2 in top_hypothesis_ids
             
-            prompt += f"\n## Hypothesis {i} [ID: {hyp_id}]\n"
-            prompt += f"Text: {text}\n"
-            if rationale:
-                prompt += f"Rationale: {rationale}\n"
-                
-        # Add task description
-        prompt += "\n# Task\n"
-        prompt += "Evaluate each hypothesis according to the criteria provided. For each hypothesis:\n"
-        prompt += "1. Assign a score from 0.0 to 10.0 for each criterion\n"
-        prompt += "2. Calculate a weighted overall score based on the criterion weights\n"
-        prompt += "3. Provide a brief rationale for the scores\n"
-        prompt += "4. Rank the hypotheses from highest to lowest overall score\n"
-        prompt += "5. Identify the top 3 hypotheses\n\n"
-        
-        prompt += "Ensure consistent and fair evaluation across all hypotheses."
-        
-        if iteration > 0:
-            prompt += f"\nThis is iteration {iteration}, so consider how the hypotheses have evolved and improved."
-        
-        return prompt
+            if is_top_match:
+                # Run multi-turn debate
+                winner, rationale = await self._run_debate_match(h1, h2, goal, iteration, feedback)
+            else:
+                # Run simple comparison
+                winner, rationale = await self._run_simple_match(h1, h2, goal, iteration)
+            
+            # Record result
+            results.append({
+                "match_id": match_id,
+                "hypothesis1_id": id1,
+                "hypothesis2_id": id2,
+                "winner_id": winner,
+                "rationale": rationale,
+                "match_type": "debate" if is_top_match else "simple"
+            })
+            
+            logger.info(f"Match {match_id}: {id1} vs {id2} - Winner: {winner}")
+            
+        return results
     
-    def _build_system_prompt(self) -> str:
+    async def _run_debate_match(self,
+                         h1: Dict[str, Any],
+                         h2: Dict[str, Any],
+                         goal: Dict[str, Any],
+                         iteration: int,
+                         feedback: List[Dict[str, Any]]) -> Tuple[str, str]:
         """
-        Build the system prompt for the ranking agent.
+        Run a multi-turn scientific debate match between two hypotheses.
         
+        Args:
+            h1: First hypothesis
+            h2: Second hypothesis
+            goal: Research goal information
+            iteration: Current iteration number
+            feedback: List of feedback entries
+            
         Returns:
-            System prompt string
+            Tuple of (winner_id, rationale)
         """
-        return """You are a scientific hypothesis evaluator working with a researcher. 
-Your task is to objectively evaluate and rank research hypotheses based on specific criteria.
-
-Guidelines:
-- Apply the same evaluation standards consistently across all hypotheses
-- Score each criterion on a scale from 0.0 (lowest) to 10.0 (highest)
-- Calculate overall scores by applying the weights provided for each criterion
-- Provide clear, specific rationales for your scoring decisions
-- Consider both the strengths and weaknesses of each hypothesis
-- Avoid being unduly influenced by writing style over substance
-- Be particularly attentive to scientific merit, testability, and alignment with research goals
-- Rank hypotheses based on their overall scores
-
-Focus on helping the researcher identify the most promising hypotheses to pursue.
-Your evaluation should help guide the research process toward scientifically valuable outcomes.
-""" 
+        logger.info(f"Running debate match: {h1.get('id')} vs {h2.get('id')}")
+        
+        # Create the debate prompt
+        debate_system_prompt = """
+        You are a panel of scientific experts conducting a structured scientific debate to compare two research hypotheses.
+        You will evaluate these hypotheses against multiple criteria to determine which is more promising.
+        Express disagreements and support your arguments with scientific reasoning.
+        Ultimately, you must reach a consensus about which hypothesis is superior.
+        """
+        
+        goal_text = goal.get("description", "")
+        domain = goal.get("domain", "")
+        
+        debate_prompt = f"""
+        RESEARCH GOAL: {goal_text}
+        
+        DOMAIN: {domain}
+        
+        HYPOTHESES TO COMPARE:
+        
+        HYPOTHESIS A:
+        {h1.get('text', '')}
+        
+        Rationale for Hypothesis A:
+        {h1.get('rationale', '')}
+        
+        HYPOTHESIS B:
+        {h2.get('text', '')}
+        
+        Rationale for Hypothesis B:
+        {h2.get('rationale', '')}
+        
+        EVALUATION CRITERIA:
+        1. Novelty: How original and innovative is the hypothesis?
+        2. Plausibility: How scientifically plausible is the hypothesis?
+        3. Testability: How feasible is it to test this hypothesis experimentally?
+        4. Impact: If true, how significant would the implications be?
+        
+        DEBATE INSTRUCTIONS:
+        Please conduct a structured scientific debate comparing these two hypotheses.
+        Discuss the strengths and weaknesses of each hypothesis according to the evaluation criteria.
+        """
+        
+        # Run the debate for multiple turns
+        debate_transcript = ""
+        
+        for turn in range(self.debate_turns):
+            turn_prompt = f"""
+            {debate_prompt}
+            
+            CURRENT DEBATE TRANSCRIPT:
+            {debate_transcript}
+            
+            DEBATE TURN {turn + 1}/{self.debate_turns}:
+            """
+            
+            response = await self.model.generate(turn_prompt, system_prompt=debate_system_prompt)
+            debate_transcript += f"\n\n--- TURN {turn + 1} ---\n{response}"
+        
+        # Final decision prompt
+        decision_prompt = f"""
+        Based on the following scientific debate transcript, determine which hypothesis is superior.
+        
+        DEBATE TRANSCRIPT:
+        {debate_transcript}
+        
+        FINAL DECISION:
+        Carefully weigh the arguments presented in the debate and decide whether Hypothesis A or Hypothesis B is superior.
+        Provide a clear justification for your decision, summarizing the key points from the debate.
+        
+        Your response should be in this format:
+        WINNER: [A or B]
+        JUSTIFICATION: [detailed explanation]
+        """
+        
+        decision_system_prompt = "You are a scientific judge making an impartial decision based on a scientific debate."
+        
+        decision_response = await self.model.generate(decision_prompt, system_prompt=decision_system_prompt)
+        
+        # Parse the decision
+        import re
+        winner_match = re.search(r'WINNER:\s*([AB])', decision_response, re.IGNORECASE)
+        justification_match = re.search(r'JUSTIFICATION:\s*(.*)', decision_response, re.DOTALL)
+        
+        winner_letter = winner_match.group(1).upper() if winner_match else None
+        justification = justification_match.group(1).strip() if justification_match else ""
+        
+        if winner_letter == 'A':
+            return h1.get('id'), justification
+        elif winner_letter == 'B':
+            return h2.get('id'), justification
+        else:
+            # If parsing failed, make a simple decision
+            logger.warning("Failed to parse debate decision, using simple comparison")
+            return await self._run_simple_match(h1, h2, goal, iteration)
+    
+    async def _run_simple_match(self,
+                         h1: Dict[str, Any],
+                         h2: Dict[str, Any],
+                         goal: Dict[str, Any],
+                         iteration: int) -> Tuple[str, str]:
+        """
+        Run a simple comparison match between two hypotheses.
+        
+        Args:
+            h1: First hypothesis
+            h2: Second hypothesis
+            goal: Research goal information
+            iteration: Current iteration number
+            
+        Returns:
+            Tuple of (winner_id, rationale)
+        """
+        logger.info(f"Running simple match: {h1.get('id')} vs {h2.get('id')}")
+        
+        system_prompt = """
+        You are a scientific evaluator comparing two research hypotheses.
+        Your task is to determine which hypothesis is more promising based on the given criteria.
+        Provide a clear justification for your decision.
+        """
+        
+        prompt = f"""
+        RESEARCH GOAL: {goal.get('description', '')}
+        
+        HYPOTHESES TO COMPARE:
+        
+        HYPOTHESIS A:
+        {h1.get('text', '')}
+        
+        Rationale for Hypothesis A:
+        {h1.get('rationale', '')}
+        
+        HYPOTHESIS B:
+        {h2.get('text', '')}
+        
+        Rationale for Hypothesis B:
+        {h2.get('rationale', '')}
+        
+        EVALUATION CRITERIA:
+        1. Novelty: How original and innovative is the hypothesis?
+        2. Plausibility: How scientifically plausible is the hypothesis?
+        3. Testability: How feasible is it to test this hypothesis experimentally?
+        4. Impact: If true, how significant would the implications be?
+        
+        Compare these hypotheses and decide which one is superior.
+        
+        Your response should be in this format:
+        WINNER: [A or B]
+        JUSTIFICATION: [detailed explanation]
+        """
+        
+        response = await self.model.generate(prompt, system_prompt=system_prompt)
+        
+        # Parse the decision
+        import re
+        winner_match = re.search(r'WINNER:\s*([AB])', response, re.IGNORECASE)
+        justification_match = re.search(r'JUSTIFICATION:\s*(.*)', response, re.DOTALL)
+        
+        winner_letter = winner_match.group(1).upper() if winner_match else None
+        justification = justification_match.group(1).strip() if justification_match else ""
+        
+        if winner_letter == 'A':
+            return h1.get('id'), justification
+        elif winner_letter == 'B':
+            return h2.get('id'), justification
+        else:
+            # If parsing failed, choose randomly
+            logger.warning("Failed to parse simple match decision, choosing randomly")
+            return random.choice([h1.get('id'), h2.get('id')]), "Decision could not be determined"
+    
+    def _update_elo_ratings(self,
+                          elo_ratings: Dict[str, float],
+                          tournament_results: List[Dict[str, Any]]) -> Dict[str, float]:
+        """
+        Update Elo ratings based on tournament results.
+        
+        Args:
+            elo_ratings: Current Elo ratings
+            tournament_results: List of match results
+            
+        Returns:
+            Updated Elo ratings
+        """
+        updated_ratings = elo_ratings.copy()
+        
+        for result in tournament_results:
+            id1 = result.get("hypothesis1_id")
+            id2 = result.get("hypothesis2_id")
+            winner_id = result.get("winner_id")
+            
+            if not (id1 in updated_ratings and id2 in updated_ratings):
+                continue
+                
+            # Get current ratings
+            rating1 = updated_ratings[id1]
+            rating2 = updated_ratings[id2]
+            
+            # Calculate expected scores
+            expected1 = 1 / (1 + 10 ** ((rating2 - rating1) / 400))
+            expected2 = 1 / (1 + 10 ** ((rating1 - rating2) / 400))
+            
+            # Calculate actual scores
+            actual1 = 1.0 if winner_id == id1 else 0.0
+            actual2 = 1.0 if winner_id == id2 else 0.0
+            
+            # Update ratings
+            updated_ratings[id1] = rating1 + self.elo_k_factor * (actual1 - expected1)
+            updated_ratings[id2] = rating2 + self.elo_k_factor * (actual2 - expected2)
+        
+        return updated_ratings
+    
+    def _apply_ratings_to_hypotheses(self,
+                                  hypotheses: List[Dict[str, Any]],
+                                  ratings: Dict[str, float]) -> List[Dict[str, Any]]:
+        """
+        Apply Elo ratings to hypotheses and sort them by rating.
+        
+        Args:
+            hypotheses: List of hypotheses
+            ratings: Elo ratings by hypothesis ID
+            
+        Returns:
+            List of hypotheses with ratings applied and sorted
+        """
+        # Deep copy the hypotheses to avoid modifying the originals
+        import copy
+        ranked_hypotheses = copy.deepcopy(hypotheses)
+        
+        # Apply ratings
+        for hypothesis in ranked_hypotheses:
+            hypothesis_id = hypothesis.get("id")
+            if hypothesis_id in ratings:
+                hypothesis["score"] = ratings[hypothesis_id]
+                
+                # Add Elo rating to metadata
+                if "metadata" not in hypothesis:
+                    hypothesis["metadata"] = {}
+                    
+                hypothesis["metadata"]["elo_rating"] = ratings[hypothesis_id]
+        
+        # Sort by rating (descending)
+        ranked_hypotheses.sort(key=lambda h: h.get("score", 0), reverse=True)
+        
+        return ranked_hypotheses 

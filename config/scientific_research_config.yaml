@@ -95,11 +95,126 @@ agents:
     prompt_template: "templates/meta_review_agent.txt"
     model_provider: "default"
     temperature: 0.4
-    output_format: "detailed"
+    output_formats: ["comprehensive", "nih_aims", "nature", "science"]
     include_experiments: true
     experiment_detail_level: "high"
     include_resource_estimates: true
     include_alternative_approaches: true
+    max_critique_items: 10
+    max_research_areas: 5
+    evolution_metrics:
+      enabled: true
+      metrics:
+        - score_improvement
+        - semantic_diversity
+        - mechanism_diversity
+        - tournament_performance
+      min_iterations: 2
+      similarity_threshold: 0.5
+    visualization:
+      enabled: true
+      types:
+        - hypothesis_network
+        - evolution_timeline
+        - research_areas
+        - experiment_dependencies
+      network_settings:
+        min_similarity: 0.5
+        max_edges: 100
+    domain_specific_templates:
+      biochemistry:
+        meta_critique: |
+          {goal}
+          
+          Analyze the reviews and debates with focus on biochemical mechanisms,
+          experimental validation, and reproducibility.
+          
+          Review Critiques:
+          {review_critiques}
+          
+          Tournament Rationales:
+          {tournament_rationales}
+          
+          Identify the {max_items} most important patterns, focusing on:
+          - Mechanistic understanding
+          - Experimental validation
+          - Technical feasibility
+          - Reproducibility considerations
+        experimental_design: |
+          {goal}
+          
+          Design biochemistry experiments for:
+          {hypotheses}
+          
+          Focus on:
+          - Molecular mechanisms
+          - Control reactions
+          - Analytical methods
+          - Replication strategies
+          
+          Detail Level: {detail_level}
+      neuroscience:
+        meta_critique: |
+          {goal}
+          
+          Analyze the reviews and debates with focus on neural mechanisms,
+          behavioral readouts, and statistical power.
+          
+          Review Critiques:
+          {review_critiques}
+          
+          Tournament Rationales:
+          {tournament_rationales}
+          
+          Identify the {max_items} most important patterns, focusing on:
+          - Neural circuits and mechanisms
+          - Behavioral measures
+          - Statistical approaches
+          - Technical limitations
+        experimental_design: |
+          {goal}
+          
+          Design neuroscience experiments for:
+          {hypotheses}
+          
+          Focus on:
+          - Neural recording/manipulation
+          - Behavioral assays
+          - Controls and statistics
+          - Reproducibility
+          
+          Detail Level: {detail_level}
+      physics:
+        meta_critique: |
+          {goal}
+          
+          Analyze the reviews and debates with focus on physical principles,
+          mathematical models, and measurement precision.
+          
+          Review Critiques:
+          {review_critiques}
+          
+          Tournament Rationales:
+          {tournament_rationales}
+          
+          Identify the {max_items} most important patterns, focusing on:
+          - Theoretical foundations
+          - Mathematical consistency
+          - Experimental precision
+          - Alternative interpretations
+        experimental_design: |
+          {goal}
+          
+          Design physics experiments for:
+          {hypotheses}
+          
+          Focus on:
+          - Measurement techniques
+          - Error analysis
+          - Control variables
+          - Theoretical predictions
+          
+          Detail Level: {detail_level}
 
 # Domain-specific configurations
 domains:

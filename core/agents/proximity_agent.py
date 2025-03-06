@@ -1,13 +1,14 @@
 """
 Proximity Agent for AI Co-Scientist
 
-This module implements the Proximity Agent, which interfaces with external
-tools and databases to gather evidence relevant to research hypotheses.
+This module implements the Proximity Agent, which calculates similarity between
+research hypotheses and builds a proximity graph for organizing related ideas.
 """
 
 import logging
 import json
-from typing import Dict, Any, List, Optional, Tuple, Union
+import numpy as np
+from typing import Dict, Any, List, Optional, Tuple, Union, Set
 
 from .base_agent import BaseAgent, AgentExecutionError
 from ..tools.literature_search import LiteratureSearch, PaperMetadata
@@ -17,11 +18,11 @@ logger = logging.getLogger(__name__)
 
 class ProximityAgent(BaseAgent):
     """
-    Proximity Agent gathers external evidence for research hypotheses.
+    Proximity Agent calculates similarity between research hypotheses.
     
-    This agent connects with external tools, databases, and literature
-    to find supporting or contradicting evidence for hypotheses and 
-    ground them in established research.
+    This agent builds a proximity graph that represents the semantic similarity
+    between different hypotheses, enabling the organization of related ideas
+    and helping the Ranking agent to structure tournament matches efficiently.
     """
     
     def __init__(self, model, config: Dict[str, Any]):
@@ -35,10 +36,10 @@ class ProximityAgent(BaseAgent):
         super().__init__(model, config)
         
         # Load agent-specific configuration
-        self.max_papers = config.get("max_papers", 5)
-        self.search_depth = config.get("search_depth", "moderate")  # shallow, moderate, deep
-        self.evidence_threshold = config.get("evidence_threshold", 0.6)  # Minimum relevance score
-        self.sources = config.get("sources", ["pubmed", "arxiv", "semantic_scholar"])
+        self.similarity_threshold = config.get("similarity_threshold", 0.7)  # Minimum similarity to consider
+        self.max_neighbors = config.get("max_neighbors", 5)  # Maximum number of neighbors per hypothesis
+        self.use_embeddings = config.get("use_embeddings", True)  # Whether to use embeddings for similarity
+        self.embedding_model = config.get("embedding_model", "default")  # Model to use for embeddings
         
         # Initialize tools
         tools_config = config.get("tools", {})
@@ -66,460 +67,295 @@ class ProximityAgent(BaseAgent):
         
     async def execute(self, context: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Gather external evidence for a research hypothesis.
+        Calculate similarity between hypotheses and build a proximity graph.
         
         Args:
             context: Dictionary containing:
                 - goal: Research goal information
-                - hypothesis: The hypothesis to gather evidence for
+                - hypotheses: List of hypotheses to analyze
                 - iteration: Current iteration number
-            params: Dictionary containing optional configuration overrides
+            params: Dictionary containing:
+                - similarity_threshold: Minimum similarity to consider (optional)
+                - max_neighbors: Maximum number of neighbors per hypothesis (optional)
                 
         Returns:
             Dictionary containing:
-                - evidence: List of evidence items
-                - references: List of references
-                - relevance_summary: Summary of relevance to hypothesis
+                - proximity_graph: Dictionary mapping hypothesis IDs to lists of similar hypothesis IDs
+                - similarity_matrix: Matrix of similarity scores between hypotheses
+                - clusters: List of hypothesis clusters
         """
-        # Extract parameters
         goal = context.get("goal", {})
-        hypothesis = context.get("hypothesis", {})
-        
-        if not goal or not hypothesis:
-            raise AgentExecutionError("Research goal and hypothesis are required for proximity search")
-        
-        # Extract text from hypothesis
-        hypothesis_text = hypothesis.get("text", "")
-        if not hypothesis_text:
-            raise AgentExecutionError("Hypothesis text is required for proximity search")
-            
-        # Extract optional parameters
+        hypotheses = context.get("hypotheses", [])
         iteration = context.get("iteration", 0)
-        max_papers = params.get("max_papers", self.max_papers)
-        search_depth = params.get("search_depth", self.search_depth)
         
-        # Prepare search queries
-        search_queries = await self._generate_search_queries(
-            goal=goal,
-            hypothesis=hypothesis,
-            search_depth=search_depth
-        )
+        # Extract parameters
+        similarity_threshold = params.get("similarity_threshold", self.similarity_threshold)
+        max_neighbors = params.get("max_neighbors", self.max_neighbors)
         
-        # Gather evidence from literature
-        evidence, references = await self._gather_literature_evidence(
-            search_queries=search_queries,
-            hypothesis=hypothesis,
-            max_papers=max_papers
-        )
-        
-        # Generate relevance summary
-        relevance_summary = await self._generate_relevance_summary(
-            hypothesis=hypothesis,
-            evidence=evidence
-        )
-        
-        # Build the result
-        result = {
-            "evidence": evidence,
-            "references": references,
-            "relevance_summary": relevance_summary,
-            "metadata": {
-                "hypothesis_id": hypothesis.get("id", ""),
-                "search_queries": search_queries,
-                "search_depth": search_depth,
-                "sources": self.sources
+        if not hypotheses:
+            logger.warning("No hypotheses provided for proximity analysis")
+            return {
+                "proximity_graph": {},
+                "similarity_matrix": [],
+                "clusters": []
             }
-        }
-        
-        return result
-    
-    async def _generate_search_queries(self,
-                                    goal: Dict[str, Any],
-                                    hypothesis: Dict[str, Any],
-                                    search_depth: str) -> List[str]:
-        """
-        Generate search queries based on the hypothesis.
-        
-        Args:
-            goal: Research goal dictionary
-            hypothesis: Hypothesis dictionary
-            search_depth: Search depth (shallow, moderate, deep)
-            
-        Returns:
-            List of search queries
-        """
-        # Extract text
-        goal_description = goal.get("description", "")
-        hypothesis_text = hypothesis.get("text", "")
-        
-        # Create a JSON schema for the expected output
-        output_schema = {
-            "type": "object",
-            "properties": {
-                "search_queries": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    },
-                    "description": "List of search queries for literature databases"
-                },
-                "rationale": {
-                    "type": "string",
-                    "description": "Rationale for the search queries"
-                }
-            },
-            "required": ["search_queries"]
-        }
-        
-        # Build the prompt
-        prompt = f"# Research Goal\n{goal_description}\n\n"
-        prompt += f"# Hypothesis\n{hypothesis_text}\n\n"
-        
-        # Add task description
-        prompt += "# Task\n"
-        prompt += "Generate effective search queries to find scientific literature that could provide evidence "
-        prompt += "related to the hypothesis above. "
-        
-        if search_depth == "shallow":
-            prompt += "Generate 1-2 focused, specific queries targeting the most central aspect of the hypothesis."
-            num_queries = 2
-        elif search_depth == "deep":
-            prompt += "Generate 4-6 diverse queries covering different aspects, mechanisms, and implications of the hypothesis."
-            num_queries = 6
-        else:  # moderate
-            prompt += "Generate 2-4 balanced queries covering the main aspects of the hypothesis."
-            num_queries = 4
-            
-        prompt += "\n\nFor each query, focus on scientific terminology likely to appear in academic publications. "
-        prompt += "Use Boolean operators (AND, OR) and special syntax when helpful."
-        
-        # Call the model
-        system_prompt = """You are a scientific literature search specialist.
-Your task is to formulate effective search queries for academic databases based on scientific hypotheses.
-
-Guidelines:
-- Create queries using scientific terminology likely to appear in research papers
-- Use Boolean operators (AND, OR) and special syntax appropriately
-- Be specific enough to find relevant papers but not so narrow that important evidence is missed
-- Consider different aspects of the hypothesis that might be explored in separate literature
-- Prioritize search terms likely to yield empirical evidence rather than theoretical papers
-"""
         
         try:
-            response = await self._call_model(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                schema=output_schema
+            # Calculate similarity matrix
+            similarity_matrix = await self._calculate_similarity_matrix(hypotheses, goal)
+            
+            # Build proximity graph
+            proximity_graph = self._build_proximity_graph(
+                hypotheses, 
+                similarity_matrix,
+                similarity_threshold,
+                max_neighbors
             )
             
-            # Extract queries
-            queries = response.get("search_queries", [])
+            # Identify clusters
+            clusters = self._identify_clusters(hypotheses, proximity_graph)
             
-            # Limit the number of queries based on search depth
-            queries = queries[:num_queries]
-            
-            if not queries:
-                # Fallback if no queries were generated
-                queries = [hypothesis_text]
-                
-            return queries
-            
-        except Exception as e:
-            logger.error(f"Error generating search queries: {str(e)}")
-            # Fallback
-            return [hypothesis_text]
-    
-    async def _gather_literature_evidence(self,
-                                       search_queries: List[str],
-                                       hypothesis: Dict[str, Any],
-                                       max_papers: int) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """
-        Gather evidence from scientific literature.
-        
-        Args:
-            search_queries: List of search queries
-            hypothesis: Hypothesis dictionary
-            max_papers: Maximum number of papers to retrieve
-            
-        Returns:
-            Tuple of (evidence items, references)
-        """
-        evidence = []
-        references = []
-        
-        # Check if literature search is available
-        if not self.literature_search:
-            logger.warning("Literature search tool not available")
-            return evidence, references
-        
-        try:
-            # Gather papers from multiple sources
-            all_papers = []
-            
-            # Execute each query
-            for query in search_queries:
-                try:
-                    # Search across multiple sources
-                    results = await self.literature_search.multi_source_search(
-                        query=query,
-                        sources=self.sources,
-                        max_results=max_papers
-                    )
-                    
-                    # Extract papers from results
-                    for source, papers in results.items():
-                        all_papers.extend(papers)
-                        
-                except Exception as e:
-                    logger.error(f"Error searching with query '{query}': {str(e)}")
-            
-            # Remove duplicates (by DOI or title)
-            unique_papers = []
-            seen_dois = set()
-            seen_titles = set()
-            
-            for paper in all_papers:
-                doi = paper.doi
-                title = paper.title.lower()
-                
-                if doi and doi in seen_dois:
-                    continue
-                if title in seen_titles:
-                    continue
-                    
-                if doi:
-                    seen_dois.add(doi)
-                seen_titles.add(title)
-                unique_papers.append(paper)
-            
-            # Limit to max papers
-            unique_papers = unique_papers[:max_papers]
-            
-            if not unique_papers:
-                logger.warning("No papers found for the search queries")
-                return evidence, references
-            
-            # Evaluate relevance of each paper
-            hypothesis_text = hypothesis.get("text", "")
-            relevant_papers = await self._evaluate_paper_relevance(
-                papers=unique_papers,
-                hypothesis=hypothesis_text
-            )
-            
-            # Create evidence items from relevant papers
-            for paper, relevance_score, relevance_note in relevant_papers:
-                if relevance_score >= self.evidence_threshold:
-                    # Add as evidence
-                    evidence_item = {
-                        "source": "literature",
-                        "title": paper.title,
-                        "authors": ", ".join(paper.authors[:3]) + ("..." if len(paper.authors) > 3 else ""),
-                        "year": paper.year or "Unknown",
-                        "content": paper.abstract[:300] + "..." if len(paper.abstract) > 300 else paper.abstract,
-                        "relevance": relevance_note,
-                        "relevance_score": relevance_score,
-                        "url": paper.url or "",
-                        "doi": paper.doi or ""
-                    }
-                    evidence.append(evidence_item)
-                
-                # Add as reference
-                ref_item = {
-                    "title": paper.title,
-                    "authors": paper.authors,
-                    "year": paper.year,
-                    "journal": paper.journal,
-                    "doi": paper.doi,
-                    "url": paper.url,
-                    "citation": paper.to_citation(format_type="apa")
-                }
-                references.append(ref_item)
-            
-            return evidence, references
-            
-        except Exception as e:
-            logger.error(f"Error gathering literature evidence: {str(e)}")
-            return evidence, references
-    
-    async def _evaluate_paper_relevance(self,
-                                     papers: List[PaperMetadata],
-                                     hypothesis: str) -> List[Tuple[PaperMetadata, float, str]]:
-        """
-        Evaluate the relevance of papers to the hypothesis.
-        
-        Args:
-            papers: List of papers
-            hypothesis: Hypothesis text
-            
-        Returns:
-            List of tuples (paper, relevance_score, relevance_note)
-        """
-        if not papers:
-            return []
-            
-        # Prepare batches to avoid too large prompts
-        batch_size = 3
-        paper_batches = [papers[i:i+batch_size] for i in range(0, len(papers), batch_size)]
-        
-        all_results = []
-        
-        for batch in paper_batches:
-            # Create a JSON schema for the expected output
-            output_schema = {
-                "type": "object",
-                "properties": {
-                    "paper_evaluations": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "paper_index": {
-                                    "type": "integer",
-                                    "description": "Index of the paper in the list"
-                                },
-                                "relevance_score": {
-                                    "type": "number",
-                                    "description": "Relevance score from 0.0 to 1.0"
-                                },
-                                "relevance_note": {
-                                    "type": "string",
-                                    "description": "Brief explanation of relevance"
-                                },
-                                "supports_or_contradicts": {
-                                    "type": "string",
-                                    "enum": ["supports", "contradicts", "neutral", "unclear"],
-                                    "description": "Whether the paper supports or contradicts the hypothesis"
-                                }
-                            },
-                            "required": ["paper_index", "relevance_score", "relevance_note", "supports_or_contradicts"]
-                        }
-                    }
-                },
-                "required": ["paper_evaluations"]
+            return {
+                "proximity_graph": proximity_graph,
+                "similarity_matrix": similarity_matrix.tolist() if isinstance(similarity_matrix, np.ndarray) else similarity_matrix,
+                "clusters": clusters
             }
+        except Exception as e:
+            logger.error(f"Error in proximity agent: {str(e)}")
+            raise AgentExecutionError(f"Failed to build proximity graph: {str(e)}")
+    
+    async def _calculate_similarity_matrix(self, 
+                                    hypotheses: List[Dict[str, Any]], 
+                                    goal: Dict[str, Any]) -> np.ndarray:
+        """
+        Calculate similarity matrix between all pairs of hypotheses.
+        
+        Args:
+            hypotheses: List of hypotheses
+            goal: Research goal information
             
-            # Build the prompt
-            prompt = f"# Hypothesis\n{hypothesis}\n\n"
-            prompt += "# Scientific Papers\n"
-            
-            for i, paper in enumerate(batch):
-                prompt += f"\n## Paper {i+1}\n"
-                prompt += f"Title: {paper.title}\n"
-                prompt += f"Authors: {', '.join(paper.authors)}\n"
-                prompt += f"Year: {paper.year or 'Unknown'}\n"
-                if paper.journal:
-                    prompt += f"Journal: {paper.journal}\n"
-                prompt += f"Abstract: {paper.abstract}\n"
-            
-            # Add task description
-            prompt += "\n# Task\n"
-            prompt += "Evaluate the relevance of each paper to the hypothesis. For each paper:\n"
-            prompt += "1. Assign a relevance score from 0.0 (not relevant) to 1.0 (highly relevant)\n"
-            prompt += "2. Provide a brief explanation of why the paper is relevant or not\n"
-            prompt += "3. Indicate whether the paper supports, contradicts, or is neutral toward the hypothesis\n"
-            
-            # Call the model
-            system_prompt = """You are a scientific research evaluator.
-Your task is to assess the relevance of scientific papers to a given hypothesis.
-
-Guidelines:
-- Focus on the scientific content and findings, not just keyword matches
-- Consider methodological relevance and theoretical frameworks
-- Identify whether papers provide supporting or contradicting evidence
-- Be objective and precise in your evaluations
-- Provide specific details about how each paper relates to the hypothesis
-"""
+        Returns:
+            Similarity matrix (n x n) where n is the number of hypotheses
+        """
+        n = len(hypotheses)
+        similarity_matrix = np.zeros((n, n))
+        
+        # If using embeddings, calculate them first
+        if self.use_embeddings and hasattr(self.model, 'get_embeddings'):
+            # Extract hypothesis texts
+            texts = [h.get("text", "") for h in hypotheses]
             
             try:
-                response = await self._call_model(
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    schema=output_schema
-                )
+                # Get embeddings from the model
+                embeddings = await self.model.get_embeddings(texts)
                 
-                # Process evaluations
-                evaluations = response.get("paper_evaluations", [])
+                # Calculate cosine similarity between all pairs
+                for i in range(n):
+                    for j in range(i, n):
+                        if i == j:
+                            similarity_matrix[i, j] = 1.0  # Self-similarity is 1.0
+                        else:
+                            # Cosine similarity
+                            sim = self._cosine_similarity(embeddings[i], embeddings[j])
+                            similarity_matrix[i, j] = sim
+                            similarity_matrix[j, i] = sim  # Symmetric
                 
-                for eval_data in evaluations:
-                    paper_idx = eval_data.get("paper_index", 0) - 1  # Convert to 0-indexed
-                    if 0 <= paper_idx < len(batch):
-                        paper = batch[paper_idx]
-                        score = eval_data.get("relevance_score", 0.0)
-                        note = eval_data.get("relevance_note", "")
-                        supports = eval_data.get("supports_or_contradicts", "neutral")
-                        
-                        # Enhance note with support information
-                        enhanced_note = f"{note} [{supports.capitalize()}]"
-                        
-                        all_results.append((paper, score, enhanced_note))
-                
+                return similarity_matrix
             except Exception as e:
-                logger.error(f"Error evaluating paper relevance: {str(e)}")
-                # Add papers with default values in case of error
-                for paper in batch:
-                    all_results.append((paper, 0.5, "Relevance uncertain due to evaluation error"))
+                logger.warning(f"Error calculating embeddings: {str(e)}. Falling back to LLM-based similarity.")
         
-        # Sort by relevance score (descending)
-        all_results.sort(key=lambda x: x[1], reverse=True)
+        # If embeddings are not available or failed, use LLM to calculate similarity
+        for i in range(n):
+            for j in range(i, n):
+                if i == j:
+                    similarity_matrix[i, j] = 1.0  # Self-similarity is 1.0
+                else:
+                    # Calculate similarity using LLM
+                    sim = await self._calculate_hypothesis_similarity(hypotheses[i], hypotheses[j], goal)
+                    similarity_matrix[i, j] = sim
+                    similarity_matrix[j, i] = sim  # Symmetric
         
-        return all_results
+        return similarity_matrix
     
-    async def _generate_relevance_summary(self,
-                                       hypothesis: Dict[str, Any],
-                                       evidence: List[Dict[str, Any]]) -> str:
+    def _cosine_similarity(self, v1: List[float], v2: List[float]) -> float:
         """
-        Generate a summary of evidence relevance to the hypothesis.
+        Calculate cosine similarity between two vectors.
         
         Args:
-            hypothesis: Hypothesis dictionary
-            evidence: List of evidence items
+            v1: First vector
+            v2: Second vector
             
         Returns:
-            Relevance summary string
+            Cosine similarity (0.0-1.0)
         """
-        if not evidence:
-            return "No relevant evidence found in the literature."
+        # Convert to numpy arrays
+        a = np.array(v1)
+        b = np.array(v2)
+        
+        # Calculate cosine similarity
+        return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+    
+    async def _calculate_hypothesis_similarity(self, 
+                                       h1: Dict[str, Any], 
+                                       h2: Dict[str, Any],
+                                       goal: Dict[str, Any]) -> float:
+        """
+        Calculate similarity between two hypotheses using the LLM.
+        
+        Args:
+            h1: First hypothesis
+            h2: Second hypothesis
+            goal: Research goal information
             
-        hypothesis_text = hypothesis.get("text", "")
+        Returns:
+            Similarity score (0.0-1.0)
+        """
+        system_prompt = """
+        You are a scientific evaluator assessing the similarity between two research hypotheses.
+        Your task is to determine how similar these hypotheses are in terms of their core ideas, approaches, and implications.
+        Consider both conceptual similarity and methodological similarity.
+        Provide a similarity score between 0.0 (completely different) and 1.0 (identical).
+        """
         
-        # Build the prompt
-        prompt = f"# Hypothesis\n{hypothesis_text}\n\n"
-        prompt += "# Evidence from Literature\n"
+        prompt = f"""
+        RESEARCH GOAL: {goal.get('description', '')}
         
-        for i, item in enumerate(evidence, 1):
-            prompt += f"\n## Evidence {i}\n"
-            prompt += f"Source: {item.get('title', 'Unknown paper')}\n"
-            prompt += f"Authors: {item.get('authors', 'Unknown')}\n"
-            prompt += f"Year: {item.get('year', 'Unknown')}\n"
-            prompt += f"Content: {item.get('content', '')}\n"
-            prompt += f"Relevance: {item.get('relevance', '')}\n"
+        HYPOTHESIS A:
+        {h1.get('text', '')}
         
-        # Add task description
-        prompt += "\n# Task\n"
-        prompt += "Synthesize the collected evidence and provide a concise summary of how it relates to the hypothesis. "
-        prompt += "Address whether the evidence generally supports, contradicts, or provides a mixed picture for the hypothesis. "
-        prompt += "Highlight any significant gaps in the evidence."
+        HYPOTHESIS B:
+        {h2.get('text', '')}
         
-        # Call the model
-        system_prompt = """You are a scientific evidence synthesizer.
-Your task is to summarize how a collection of evidence relates to a scientific hypothesis.
-
-Guidelines:
-- Be objective and balanced in your assessment
-- Synthesize across different pieces of evidence to identify patterns
-- Highlight both supporting and contradicting evidence
-- Identify gaps or limitations in the available evidence
-- Keep your summary concise and focused on relevance to the hypothesis
-"""
+        Analyze these two hypotheses and determine their similarity on a scale from 0.0 to 1.0, where:
+        - 0.0: Completely different, addressing entirely separate aspects with no overlap
+        - 0.3: Minimal similarity, with only tangential connections
+        - 0.5: Moderate similarity, addressing related aspects but with different approaches
+        - 0.7: Substantial similarity, with overlapping core ideas but some distinct elements
+        - 1.0: Nearly identical hypotheses
         
+        Consider:
+        1. Conceptual similarity: Do they address the same core concepts or mechanisms?
+        2. Methodological similarity: Do they suggest similar experimental approaches?
+        3. Implication similarity: Would they lead to similar outcomes if proven true?
+        
+        Provide your assessment as a single number between 0.0 and 1.0.
+        """
+        
+        response = await self.model.generate(prompt, system_prompt=system_prompt)
+        
+        # Extract the similarity score
         try:
-            response = await self._call_model(
-                prompt=prompt,
-                system_prompt=system_prompt
-            )
-            
-            return response
-            
+            # Look for a number between 0.0 and 1.0
+            import re
+            match = re.search(r'(\d+\.\d+|\d+)', response)
+            if match:
+                similarity = float(match.group(1))
+                # Ensure it's between 0.0 and 1.0
+                similarity = max(0.0, min(1.0, similarity))
+                return similarity
+            else:
+                logger.warning(f"Could not extract similarity score from response: {response}")
+                return 0.5  # Default to moderate similarity
         except Exception as e:
-            logger.error(f"Error generating relevance summary: {str(e)}")
-            return "Unable to generate evidence summary due to an error." 
+            logger.error(f"Error parsing similarity score: {str(e)}")
+            return 0.5  # Default to moderate similarity
+    
+    def _build_proximity_graph(self,
+                            hypotheses: List[Dict[str, Any]],
+                            similarity_matrix: np.ndarray,
+                            similarity_threshold: float,
+                            max_neighbors: int) -> Dict[str, List[str]]:
+        """
+        Build a proximity graph based on hypothesis similarity.
+        
+        Args:
+            hypotheses: List of hypotheses
+            similarity_matrix: Matrix of similarity scores
+            similarity_threshold: Minimum similarity to consider
+            max_neighbors: Maximum number of neighbors per hypothesis
+            
+        Returns:
+            Dictionary mapping hypothesis IDs to lists of similar hypothesis IDs
+        """
+        n = len(hypotheses)
+        proximity_graph = {}
+        
+        for i in range(n):
+            h_id = hypotheses[i].get("id")
+            proximity_graph[h_id] = []
+            
+            # Get similarity scores for this hypothesis
+            similarities = [(j, similarity_matrix[i, j]) for j in range(n) if i != j]
+            
+            # Sort by similarity (descending)
+            similarities.sort(key=lambda x: x[1], reverse=True)
+            
+            # Add top neighbors that meet the threshold
+            for j, sim in similarities:
+                if sim >= similarity_threshold and len(proximity_graph[h_id]) < max_neighbors:
+                    neighbor_id = hypotheses[j].get("id")
+                    proximity_graph[h_id].append(neighbor_id)
+        
+        return proximity_graph
+    
+    def _identify_clusters(self,
+                        hypotheses: List[Dict[str, Any]],
+                        proximity_graph: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+        """
+        Identify clusters of related hypotheses.
+        
+        Args:
+            hypotheses: List of hypotheses
+            proximity_graph: Proximity graph
+            
+        Returns:
+            List of clusters, each containing hypothesis IDs and a representative hypothesis
+        """
+        # Create a lookup dictionary for hypotheses
+        hypothesis_dict = {h.get("id"): h for h in hypotheses}
+        
+        # Track which hypotheses have been assigned to clusters
+        assigned = set()
+        clusters = []
+        
+        # Helper function for DFS to find connected components
+        def dfs(node: str, cluster: Set[str]):
+            if node in assigned:
+                return
+            
+            assigned.add(node)
+            cluster.add(node)
+            
+            # Visit neighbors
+            for neighbor in proximity_graph.get(node, []):
+                dfs(neighbor, cluster)
+        
+        # Find connected components (clusters)
+        for h in hypotheses:
+            h_id = h.get("id")
+            
+            if h_id not in assigned:
+                # Start a new cluster
+                cluster = set()
+                dfs(h_id, cluster)
+                
+                if cluster:
+                    # Find the most central hypothesis in the cluster
+                    # (the one with the most connections to others in the cluster)
+                    central_id = max(
+                        cluster, 
+                        key=lambda node: sum(1 for neighbor in proximity_graph.get(node, []) if neighbor in cluster)
+                    )
+                    
+                    clusters.append({
+                        "id": f"cluster_{len(clusters)}",
+                        "hypothesis_ids": list(cluster),
+                        "representative_id": central_id,
+                        "representative": hypothesis_dict.get(central_id),
+                        "size": len(cluster)
+                    })
+        
+        # Sort clusters by size (descending)
+        clusters.sort(key=lambda c: c.get("size", 0), reverse=True)
+        
+        return clusters 

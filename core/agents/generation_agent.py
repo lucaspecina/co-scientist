@@ -19,7 +19,9 @@ class GenerationAgent(BaseAgent):
     Generation Agent creates initial research hypotheses.
     
     This agent uses the language model to generate hypotheses based on a research goal,
-    taking into account any domain constraints and scientist feedback.
+    taking into account any domain constraints and scientist feedback. It employs several
+    techniques including literature exploration, simulated scientific debates, iterative
+    assumptions identification, and research expansion.
     """
     
     def __init__(self, model, config: Dict[str, Any]):
@@ -36,6 +38,10 @@ class GenerationAgent(BaseAgent):
         self.generation_count = config.get("generation_count", 5)
         self.creativity = config.get("creativity", 0.7)  # Higher = more creative
         self.diversity_threshold = config.get("diversity_threshold", 0.3)
+        self.debate_turns = config.get("debate_turns", 3)  # Number of debate turns
+        self.debate_enabled = config.get("debate_enabled", True)  # Enable debate-based generation
+        self.literature_search_enabled = config.get("literature_search_enabled", True)
+        self.assumptions_identification_enabled = config.get("assumptions_identification_enabled", True)
         
     async def execute(self, context: Dict[str, Any], params: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -48,94 +54,55 @@ class GenerationAgent(BaseAgent):
                 - feedback: List of feedback entries (optional)
             params: Dictionary containing:
                 - count: Number of hypotheses to generate (optional, overrides config)
-                - creativity: Creativity level (optional, overrides config)
+                - generation_method: Method to use for generation ("debate", "literature", "assumptions", "expansion")
                 
         Returns:
             Dictionary containing:
-                - hypotheses: List of generated hypothesis objects
-                - metadata: Information about the generation process
+                - hypotheses: List of generated hypotheses
         """
-        # Extract parameters
         goal = context.get("goal", {})
-        if not goal or not goal.get("description"):
-            raise AgentExecutionError("Research goal is required for hypothesis generation")
-            
-        # Extract and override parameters if provided
-        count = params.get("count", self.generation_count)
-        creativity = params.get("creativity", self.creativity)
         iteration = context.get("iteration", 0)
         feedback = context.get("feedback", [])
         
-        # Adjust model parameters based on iteration and creativity
-        temperature = min(0.5 + (creativity * 0.5), 0.95)  # Higher for more creative
+        count = params.get("count", self.generation_count)
+        generation_method = params.get("generation_method", "auto")
         
-        # Create a JSON schema for the expected output
-        output_schema = {
-            "type": "object",
-            "properties": {
-                "hypotheses": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "text": {
-                                "type": "string",
-                                "description": "The hypothesis statement"
-                            },
-                            "rationale": {
-                                "type": "string",
-                                "description": "Reasoning for why this hypothesis is plausible"
-                            }
-                        },
-                        "required": ["text", "rationale"]
-                    }
-                },
-                "reasoning": {
-                    "type": "string",
-                    "description": "Explanation of the generation approach"
-                }
-            },
-            "required": ["hypotheses", "reasoning"]
-        }
-        
-        # Build the prompt
-        prompt = self._build_generation_prompt(
-            goal=goal,
-            count=count,
-            iteration=iteration,
-            feedback=feedback
-        )
-        
-        # Call the model
-        system_prompt = self._build_system_prompt(creativity)
+        hypotheses = []
         
         try:
-            response = await self._call_model(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                schema=output_schema
-            )
-            
-            # Validate the response
-            hypotheses = response.get("hypotheses", [])
-            if not hypotheses:
-                logger.warning("Generation agent returned no hypotheses")
+            # Select generation method based on context or random selection
+            if generation_method == "auto":
+                # In earlier iterations, prefer literature search and debates
+                # In later iterations, prefer assumptions and research expansion
+                if iteration < 2:
+                    methods = ["debate", "literature"] 
+                else:
+                    methods = ["debate", "literature", "assumptions", "expansion"]
                 
-            # Add metadata to the response
-            result = {
-                "hypotheses": hypotheses,
-                "metadata": {
-                    "count": len(hypotheses),
-                    "creativity": creativity,
-                    "iteration": iteration,
-                    "reasoning": response.get("reasoning", "")
-                }
-            }
+                import random
+                generation_method = random.choice(methods)
             
-            return result
+            logger.info(f"Using generation method: {generation_method}")
             
+            if generation_method == "debate":
+                hypotheses = await self._generate_via_debate(goal, count, iteration, feedback)
+            elif generation_method == "literature":
+                hypotheses = await self._generate_via_literature(goal, count, iteration, feedback)
+            elif generation_method == "assumptions":
+                hypotheses = await self._generate_via_assumptions(goal, count, iteration, feedback)
+            elif generation_method == "expansion":
+                hypotheses = await self._generate_via_expansion(goal, count, iteration, feedback)
+            else:
+                # Fallback to standard generation
+                prompt = self._build_generation_prompt(goal, count, iteration, feedback)
+                system_prompt = self._build_system_prompt(self.creativity)
+                
+                response = await self.model.generate(prompt, system_prompt=system_prompt)
+                hypotheses = self._parse_hypotheses(response)
+            
+            return {"hypotheses": hypotheses}
         except Exception as e:
-            logger.error(f"Generation agent execution failed: {str(e)}")
+            logger.error(f"Error in generation agent: {str(e)}")
             raise AgentExecutionError(f"Failed to generate hypotheses: {str(e)}")
     
     def _build_generation_prompt(self, 
@@ -244,4 +211,179 @@ Ensure that each hypothesis:
         Returns:
             Configured GenerationAgent instance
         """
-        return cls(model, config) 
+        return cls(model, config)
+
+    async def _generate_via_debate(self, goal: Dict[str, Any], count: int, iteration: int, feedback: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Generate hypotheses using simulated scientific debate.
+        
+        This implements the self-play based scientific debate described in the paper,
+        where multiple expert perspectives debate and refine ideas.
+        
+        Args:
+            goal: Research goal information
+            count: Number of hypotheses to generate
+            iteration: Current iteration number
+            feedback: List of feedback entries
+            
+        Returns:
+            List of generated hypotheses
+        """
+        logger.info(f"Generating {count} hypotheses via scientific debate")
+        
+        # Create the debate prompt
+        debate_system_prompt = """
+        You are a panel of diverse scientific experts engaging in a structured scientific debate to generate novel research hypotheses.
+        Each expert should represent a different perspective or discipline relevant to the research goal.
+        The debate should follow these steps:
+        1. Each expert introduces a potential hypothesis or angle based on their expertise
+        2. Experts critique and improve each other's ideas
+        3. The panel synthesizes the discussion into refined hypotheses
+        4. The panel selects the most promising hypotheses that are novel, plausible, and testable
+        
+        Express disagreements and alternate viewpoints to ensure a thorough exploration of the hypothesis space.
+        Support your arguments with scientific reasoning and potential evidence.
+        """
+        
+        goal_text = goal.get("description", "")
+        domain = goal.get("domain", "")
+        constraints = goal.get("constraints", [])
+        background = goal.get("background", "")
+        
+        debate_prompt = f"""
+        RESEARCH GOAL: {goal_text}
+        
+        DOMAIN: {domain}
+        
+        BACKGROUND INFORMATION:
+        {background}
+        
+        CONSTRAINTS:
+        {json.dumps(constraints) if constraints else "No specific constraints provided."}
+        
+        PREVIOUS FEEDBACK:
+        {json.dumps(feedback) if feedback else "No feedback provided yet."}
+        
+        DEBATE INSTRUCTIONS:
+        Please conduct a multi-turn scientific debate among experts from diverse relevant fields to generate {count} novel research hypotheses related to the research goal.
+        
+        Generate hypotheses that are:
+        1. Novel and not obvious from existing literature
+        2. Scientifically plausible and grounded in evidence
+        3. Testable through experiments
+        4. Addressing the specific research goal
+        
+        For each hypothesis, provide:
+        - A clear statement of the hypothesis
+        - The scientific rationale behind it
+        - Potential experimental approaches to test it
+        """
+        
+        # Run the debate for multiple turns
+        debate_transcript = ""
+        
+        for turn in range(self.debate_turns):
+            turn_prompt = f"""
+            {debate_prompt}
+            
+            CURRENT DEBATE TRANSCRIPT:
+            {debate_transcript}
+            
+            DEBATE TURN {turn + 1}/{self.debate_turns}:
+            """
+            
+            response = await self.model.generate(turn_prompt, system_prompt=debate_system_prompt)
+            debate_transcript += f"\n\n--- TURN {turn + 1} ---\n{response}"
+        
+        # Final synthesis prompt to extract hypotheses
+        synthesis_prompt = f"""
+        Based on the following scientific debate transcript, extract the {count} most promising hypotheses.
+        
+        DEBATE TRANSCRIPT:
+        {debate_transcript}
+        
+        For each hypothesis, provide:
+        1. A title
+        2. A clear statement of the hypothesis
+        3. Scientific rationale
+        4. Potential experimental approach
+        5. Novelty assessment
+        
+        Format each hypothesis as a JSON object with the following structure:
+        {{
+            "title": "Brief title",
+            "hypothesis": "Clear statement of the hypothesis",
+            "rationale": "Scientific reasoning and supporting evidence",
+            "experimental_approach": "How this could be tested experimentally",
+            "novelty": "Assessment of how this advances beyond current knowledge"
+        }}
+        
+        Return an array of these JSON objects.
+        """
+        
+        synthesis_system_prompt = "You are a scientific editor synthesizing the results of a scientific debate into clear, structured research hypotheses."
+        
+        response = await self.model.generate(synthesis_prompt, system_prompt=synthesis_system_prompt)
+        
+        try:
+            # Extract JSON array from response
+            import re
+            json_match = re.search(r'\[[\s\S]*\]', response)
+            if json_match:
+                json_str = json_match.group(0)
+                hypotheses_data = json.loads(json_str)
+            else:
+                # Fallback if no JSON array is found
+                logger.warning("No JSON array found in debate synthesis response")
+                hypotheses_data = self._parse_hypotheses(response)
+            
+            # Convert to the expected format
+            hypotheses = []
+            for h in hypotheses_data:
+                hypotheses.append({
+                    "text": h.get("hypothesis", ""),
+                    "title": h.get("title", ""),
+                    "rationale": h.get("rationale", ""),
+                    "experimental_approach": h.get("experimental_approach", ""),
+                    "metadata": {
+                        "generation_method": "scientific_debate",
+                        "novelty_assessment": h.get("novelty", ""),
+                        "debate_turns": self.debate_turns
+                    }
+                })
+            
+            return hypotheses
+        except Exception as e:
+            logger.error(f"Error parsing debate synthesis: {str(e)}")
+            # Fallback to standard parsing if JSON extraction fails
+            return self._parse_hypotheses(response)
+
+    async def _generate_via_literature(self, goal: Dict[str, Any], count: int, iteration: int, feedback: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Generate hypotheses based on literature exploration via web search."""
+        # Implementation details will be added here
+        logger.info("Literature-based generation not fully implemented yet")
+        # Fallback to standard generation for now
+        prompt = self._build_generation_prompt(goal, count, iteration, feedback)
+        system_prompt = self._build_system_prompt(self.creativity)
+        response = await self.model.generate(prompt, system_prompt=system_prompt)
+        return self._parse_hypotheses(response)
+        
+    async def _generate_via_assumptions(self, goal: Dict[str, Any], count: int, iteration: int, feedback: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Generate hypotheses by identifying and testing assumptions."""
+        # Implementation details will be added here
+        logger.info("Assumptions-based generation not fully implemented yet")
+        # Fallback to standard generation for now
+        prompt = self._build_generation_prompt(goal, count, iteration, feedback)
+        system_prompt = self._build_system_prompt(self.creativity)
+        response = await self.model.generate(prompt, system_prompt=system_prompt)
+        return self._parse_hypotheses(response)
+        
+    async def _generate_via_expansion(self, goal: Dict[str, Any], count: int, iteration: int, feedback: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Generate hypotheses by expanding on existing research directions."""
+        # Implementation details will be added here
+        logger.info("Expansion-based generation not fully implemented yet")
+        # Fallback to standard generation for now
+        prompt = self._build_generation_prompt(goal, count, iteration, feedback)
+        system_prompt = self._build_system_prompt(self.creativity)
+        response = await self.model.generate(prompt, system_prompt=system_prompt)
+        return self._parse_hypotheses(response) 
