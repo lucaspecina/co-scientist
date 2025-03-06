@@ -1196,11 +1196,12 @@
   ],
   "iterations_completed": 0,
   "max_iterations": 5,
-  "state": "evolving",
+  "state": "stopped",
   "feedback_history": [],
   "top_hypotheses": [],
   "tool_usage": {},
   "started_at": "2025-03-05T16:23:11.685615",
   "completed_at": null,
-  "update_time": 1741202643.9342036
+  "update_time": 1741202643.9342036,
+  "stopped_at": "2025-03-06T11:55:29.456887"
 }

@@ -1,3 +1,5 @@
+# This file has been moved to the tests/ directory.
+
 #!/usr/bin/env python
 """
 Test script to verify that environment variables are loading correctly.
