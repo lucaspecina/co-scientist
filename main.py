@@ -91,6 +91,9 @@ class CoScientistCLI:
         # System info command
         subparsers.add_parser("info", help="Get system information")
         
+        # Add Azure-specific argument
+        parser.add_argument('--azure', action='store_true', help='Run the system with Azure OpenAI configuration')
+        
         # Parse arguments
         self.args = parser.parse_args()
         
@@ -109,6 +112,26 @@ class CoScientistCLI:
             config_path = "config/default_config.yaml"
             
         self.controller = CoScientistController(config_path=config_path)
+        
+        # Azure-specific initialization
+        if self.args.azure:
+            api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+            api_version = os.environ.get("AZURE_OPENAI_API_VERSION")
+            endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+            deployment_name = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
+
+            if not all([api_key, api_version, endpoint, deployment_name]):
+                print("Error: Missing required Azure OpenAI environment variables.")
+                sys.exit(1)
+
+            azure_config = {
+                "api_key": api_key,
+                "api_version": api_version,
+                "endpoint": endpoint,
+                "deployment_id": deployment_name
+            }
+
+            self.controller = CoScientistController(config={"models": {"azure_openai": azure_config}})
         
         # Process command
         if self.args.command == "start":

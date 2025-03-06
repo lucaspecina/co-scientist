@@ -61,41 +61,26 @@ class ModelFactory:
         if provider == "default" or provider is None:
             provider = config.get("default_provider", "azure_openai")
         
-        # Special handling for Azure OpenAI - extract credentials from environment variables
+        # Special handling for Azure OpenAI
         if provider == "azure_openai":
-            # Get environment variables
             api_key = os.environ.get("AZURE_OPENAI_API_KEY")
             api_version = os.environ.get("AZURE_OPENAI_API_VERSION")
             endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
             deployment_name = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME")
-            
-            # Create a properly structured config for Azure OpenAI
+
             azure_config = {
                 "api_key": api_key,
                 "api_version": api_version,
                 "endpoint": endpoint,
                 "deployment_id": deployment_name
             }
-            
-            # Get additional configuration from models.azure_openai if available
+
             if "models" in config and "azure_openai" in config["models"]:
                 azure_model_config = config["models"]["azure_openai"]
-                # Use values from config if not set by environment variables
-                if not api_key and "api_key" in azure_model_config:
-                    azure_config["api_key"] = azure_model_config["api_key"]
-                if not api_version and "api_version" in azure_model_config:
-                    azure_config["api_version"] = azure_model_config["api_version"]
-                if not endpoint and "endpoint" in azure_model_config:
-                    azure_config["endpoint"] = azure_model_config["endpoint"]
-                if not deployment_name and "deployment_id" in azure_model_config:
-                    azure_config["deployment_id"] = azure_model_config["deployment_id"]
-                
-                # Copy over other configuration parameters
                 for key, value in azure_model_config.items():
                     if key not in azure_config:
                         azure_config[key] = value
-            
-            # Use the Azure config
+
             config_to_use = azure_config
         else:
             # For other providers, use the config as is
