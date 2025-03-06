@@ -95,8 +95,21 @@ This process typically takes a few minutes as the agents work through multiple s
 
 #### 3. View Top Hypotheses
 
-Use our custom script to view the top hypotheses:
+You can view top hypotheses in two ways:
 
+**Option 1: Using the CLI command**
+```bash
+python main.py top-hypotheses --session your_session_id [--limit N]
+```
+
+Example:
+```bash
+python main.py top-hypotheses --session session_1741182035 --limit 5
+```
+
+**What happens:** The command retrieves and displays the highest-ranked hypotheses for your session in a nicely formatted output, showing each hypothesis's score, text, confidence level, and status.
+
+**Option 2: Using the utility script**
 ```bash
 python get_top_hypotheses.py your_session_id
 ```
@@ -342,4 +355,44 @@ If you encounter issues with feedback submission in the console, use the file-ba
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Command Line Interface (CLI)
+
+The AI Co-Scientist CLI provides the following commands:
+
+- `start`: Start the system.
+- `create-session`: Create a new research session.
+- `run`: Run a research session.
+- `feedback`: Add feedback to a session.
+- `status`: Get session status.
+- `hypotheses`: Get hypotheses from a session.
+- `list`: List all sessions.
+- `info`: Get system information.
+- `quick-list`: Quickly list all sessions.
+- `check-usage`: Check API usage for a session.
+- `delete-sessions`: Delete all sessions.
+- `check-feedback`: Check feedback for a session.
+- `stop-session`: Stop a specific session.
+- `stop-all-sessions`: Stop all active sessions.
+- `examine-session`: Examine detailed session information.
+- `session-monitor-gui`: Launch the session monitor GUI.
+
+### Usage Examples
+
+```bash
+python main.py start
+python main.py create-session --goal "Your research goal" --domain "Scientific domain"
+python main.py run --session SESSION_ID
+python main.py feedback --session SESSION_ID --text "Your feedback"
+python main.py status --session SESSION_ID
+python main.py quick-list
+python main.py check-usage --session SESSION_ID
+python main.py delete-sessions
+python main.py stop-session --session SESSION_ID
+python main.py stop-all-sessions
+python main.py examine-session --session SESSION_ID
+python main.py session-monitor-gui
+```
+
+Use `python main.py -h` for general help or `python main.py <command> -h` for detailed help on a specific command. 
