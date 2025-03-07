@@ -2,13 +2,18 @@
 Ranking Agent for AI Co-Scientist
 
 This module implements the Ranking Agent, which evaluates and scores research
-hypotheses based on multiple criteria to identify the most promising ones.
+hypotheses based on multiple criteria to identify the most promising ones using
+both direct scoring and an Elo-based tournament system.
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+import asyncio
+from typing import Dict, Any, List, Optional, Tuple, Set
+import uuid
 
 from .base_agent import BaseAgent, AgentExecutionError
+from ..tournament.elo_tournament import EloTournament
+from ..debate.scientific_debate import ScientificDebate, DebateFormat
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +23,8 @@ class RankingAgent(BaseAgent):
     Ranking Agent evaluates and scores research hypotheses.
     
     This agent applies consistent evaluation criteria across all hypotheses
-    to produce a ranked list based on their potential scientific value.
+    to produce a ranked list based on their potential scientific value using
+    both direct scoring and an Elo-based tournament system.
     """
     
     def __init__(self, model, config: Dict[str, Any]):
@@ -59,6 +65,16 @@ class RankingAgent(BaseAgent):
             for criterion in self.criteria:
                 self.criteria[criterion]["weight"] /= total_weight
         
+        # Tournament configuration
+        self.use_tournament = config.get("use_tournament", True)
+        self.tournament_matches = config.get("tournament_matches", 10)
+        self.tournament_k_factor = config.get("tournament_k_factor", 32.0)
+        self.debate_format = config.get("debate_format", "single_turn")
+        
+        # Initialize tournament state
+        self.tournament = None
+        self.debate = None
+        
     def _get_default_description(self, criterion: str) -> str:
         """
         Get default description for a criterion.
@@ -89,6 +105,8 @@ class RankingAgent(BaseAgent):
                 - hypotheses: List of hypotheses to rank
                 - iteration: Current iteration number
                 - feedback: List of feedback entries (optional)
+                - previous_tournament: Previous tournament state (optional)
+                - similarity_graph: Hypothesis similarity graph (optional)
             params: Dictionary containing optional configuration overrides
                 
         Returns:
@@ -96,6 +114,8 @@ class RankingAgent(BaseAgent):
                 - ranked_hypotheses: List of hypotheses with scores
                 - ranking_explanation: Explanation of the ranking rationale
                 - top_hypotheses: List of top hypothesis IDs
+                - tournament_state: Current tournament state (if using tournament)
+                - match_results: Results of tournament matches (if using tournament)
         """
         # Extract parameters
         goal = context.get("goal", {})
@@ -110,7 +130,64 @@ class RankingAgent(BaseAgent):
         # Extract optional parameters
         iteration = context.get("iteration", 0)
         feedback = context.get("feedback", [])
+        previous_tournament = context.get("previous_tournament", None)
+        similarity_graph = context.get("similarity_graph", {})
         
+        # Check if we should use tournament-based ranking
+        use_tournament = params.get("use_tournament", self.use_tournament)
+        
+        if use_tournament and len(hypotheses) > 1:
+            # Use tournament-based ranking with debates
+            result = await self._run_tournament_ranking(
+                goal=goal,
+                hypotheses=hypotheses,
+                iteration=iteration,
+                feedback=feedback,
+                previous_tournament=previous_tournament,
+                similarity_graph=similarity_graph,
+                params=params
+            )
+        else:
+            # Use direct scoring (standard approach)
+            result = await self._run_direct_scoring(
+                goal=goal,
+                hypotheses=hypotheses,
+                iteration=iteration,
+                feedback=feedback,
+                params=params
+            )
+            
+        # Add metadata to the result
+        result["metadata"] = {
+            "iteration": iteration,
+            "criteria": list(self.criteria.keys()),
+            "hypothesis_count": len(hypotheses),
+            "ranking_method": "tournament" if use_tournament and len(hypotheses) > 1 else "direct"
+        }
+        
+        return result
+    
+    async def _run_direct_scoring(
+        self,
+        goal: Dict[str, Any],
+        hypotheses: List[Dict[str, Any]],
+        iteration: int,
+        feedback: List[Dict[str, Any]],
+        params: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Run direct scoring of hypotheses (original approach).
+        
+        Args:
+            goal: Research goal information
+            hypotheses: List of hypotheses to rank
+            iteration: Current iteration number
+            feedback: List of feedback entries
+            params: Additional parameters
+            
+        Returns:
+            Ranking results
+        """
         # Create a JSON schema for the expected output
         output_schema = {
             "type": "object",
@@ -190,19 +267,210 @@ class RankingAgent(BaseAgent):
             result = {
                 "ranked_hypotheses": ranked_hypotheses,
                 "ranking_explanation": ranking_explanation,
-                "top_hypotheses": top_hypotheses,
-                "metadata": {
-                    "iteration": iteration,
-                    "criteria": list(self.criteria.keys()),
-                    "hypothesis_count": len(hypotheses)
-                }
+                "top_hypotheses": top_hypotheses[:min(3, len(ranked_hypotheses))]
             }
             
             return result
             
         except Exception as e:
-            logger.error(f"Ranking agent execution failed: {str(e)}")
+            logger.error(f"Ranking agent direct scoring failed: {str(e)}")
             raise AgentExecutionError(f"Failed to rank hypotheses: {str(e)}")
+            
+    async def _run_tournament_ranking(
+        self,
+        goal: Dict[str, Any],
+        hypotheses: List[Dict[str, Any]],
+        iteration: int,
+        feedback: List[Dict[str, Any]],
+        previous_tournament: Optional[Dict[str, Any]] = None,
+        similarity_graph: Optional[Dict[str, List[str]]] = None,
+        params: Dict[str, Any] = {}
+    ) -> Dict[str, Any]:
+        """
+        Run tournament-based ranking of hypotheses.
+        
+        Args:
+            goal: Research goal information
+            hypotheses: List of hypotheses to rank
+            iteration: Current iteration number
+            feedback: List of feedback entries
+            previous_tournament: Previous tournament state
+            similarity_graph: Hypothesis similarity graph
+            params: Additional parameters
+            
+        Returns:
+            Tournament ranking results
+        """
+        # Ensure we have at least 2 hypotheses for tournament
+        if len(hypotheses) < 2:
+            logger.warning(f"Not enough hypotheses for tournament (found {len(hypotheses)}), using direct scoring instead")
+            return await self._run_direct_scoring(goal, hypotheses, iteration, feedback, params)
+        # Initialize tournament
+        self.tournament = EloTournament(
+            k_factor=params.get("tournament_k_factor", self.tournament_k_factor),
+            prioritize_similar=True,
+            prioritize_new=True,
+            prioritize_top_ranked=True
+        )
+        
+        # Initialize debate system
+        self.debate = ScientificDebate(
+            model_provider=self.model,
+            format=DebateFormat(params.get("debate_format", self.debate_format)),
+            evaluation_criteria=list(self.criteria.keys()),
+            max_turns=params.get("debate_max_turns", 1),
+            use_mediator=params.get("debate_use_mediator", False)
+        )
+        
+        # Add all hypotheses to the tournament
+        for hypothesis in hypotheses:
+            hyp_id = hypothesis.get("id", str(uuid.uuid4()))
+            # Ensure ID exists in the hypothesis
+            hypothesis["id"] = hyp_id
+            self.tournament.add_hypothesis(hyp_id, hypothesis)
+        
+        # If we have similarity information, update the tournament
+        if similarity_graph:
+            self.tournament.update_similarity_graph(similarity_graph)
+            
+        # Generate the goal description for debates
+        goal_description = goal.get("description", "")
+        domain = goal.get("domain", "")
+        if domain:
+            goal_description += f" (Domain: {domain})"
+            
+        # Run tournament matches
+        num_matches = min(
+            params.get("tournament_matches", self.tournament_matches),
+            len(hypotheses) * (len(hypotheses) - 1) // 2  # Maximum possible pairs
+        )
+        
+        match_results = []
+        
+        # Track pairs we've already matched to avoid duplicates
+        matched_pairs: Set[Tuple[str, str]] = set()
+        
+        for _ in range(num_matches):
+            try:
+                # Get the next pair to match
+                hyp1_id, hyp2_id = self.tournament.get_prioritized_match()
+                
+                # Skip if we've already matched this pair
+                if (hyp1_id, hyp2_id) in matched_pairs or (hyp2_id, hyp1_id) in matched_pairs:
+                    continue
+                
+                # Mark as matched
+                matched_pairs.add((hyp1_id, hyp2_id))
+                
+                # Get the hypothesis data
+                hyp1 = self.tournament.get_hypothesis_data(hyp1_id)
+                hyp2 = self.tournament.get_hypothesis_data(hyp2_id)
+                
+                # Conduct the debate
+                debate_result = await self.debate.conduct_debate(
+                    hypothesis1=hyp1,
+                    hypothesis2=hyp2,
+                    research_goal=goal_description
+                )
+                
+                # Record the result in the tournament
+                winner_id = None
+                if debate_result["winner"] == "hypothesis1":
+                    winner_id = hyp1_id
+                elif debate_result["winner"] == "hypothesis2":
+                    winner_id = hyp2_id
+                
+                # Pass the evaluation for recording in match history
+                self.tournament.record_match_result(
+                    hypothesis1_id=hyp1_id, 
+                    hypothesis2_id=hyp2_id, 
+                    winner_id=winner_id,
+                    evaluation=debate_result
+                )
+                
+                # Record the debate result
+                match_results.append({
+                    "hypothesis1_id": hyp1_id,
+                    "hypothesis2_id": hyp2_id,
+                    "winner_id": winner_id,
+                    "debate_id": debate_result["debate_id"],
+                    "justification": debate_result["justification"]
+                })
+                
+            except Exception as e:
+                logger.error(f"Error in tournament match: {str(e)}")
+                continue
+        
+        # Get the rankings
+        rankings = self.tournament.get_rankings()
+        top_hypotheses = self.tournament.get_top_hypotheses(3)
+        
+        # Generate ranked_hypotheses in the expected format
+        ranked_hypotheses = []
+        for hyp_id, elo_rating, matches_played in rankings:
+            hypothesis = self.tournament.get_hypothesis_data(hyp_id)
+            
+            # Calculate a normalized score between 0-10 based on Elo rating
+            # 1200 is baseline (5.0), range typically 1000-1600 (0-10)
+            normalized_score = min(10.0, max(0.0, 5.0 + (elo_rating - 1200) / 80))
+            
+            # Get criteria scores from any debate results if available
+            criteria_scores = {}
+            match_results = self.tournament.match_history
+            
+            for criterion in self.criteria:
+                # Start with baseline score
+                criteria_scores[criterion] = normalized_score
+                
+            # Try to extract criteria scores from match results if available
+            for match in match_results:
+                if 'evaluation' in match and match.get('winner_id') == hyp_id:
+                    if 'criteria_scoring' in match['evaluation']:
+                        for criterion, scoring in match['evaluation']['criteria_scoring'].items():
+                            if criterion in self.criteria:
+                                # If the new format with hypothesis1_score and hypothesis2_score
+                                if isinstance(scoring, dict) and 'hypothesis1_score' in scoring:
+                                    # Determine which hypothesis this is in the match
+                                    if hyp_id == match.get('hypothesis1_id'):
+                                        criteria_scores[criterion] = scoring.get('hypothesis1_score', normalized_score)
+                                    else:
+                                        criteria_scores[criterion] = scoring.get('hypothesis2_score', normalized_score)
+                                else:
+                                    # Old format or string value
+                                    if isinstance(scoring, (int, float)):
+                                        criteria_scores[criterion] = scoring
+            
+            ranked_hyp = {
+                "id": hyp_id,
+                "overall_score": normalized_score,
+                "criteria_scores": criteria_scores,
+                "ranking_rationale": f"Based on {matches_played} tournament matches with Elo rating {elo_rating:.1f}"
+            }
+            
+            ranked_hypotheses.append(ranked_hyp)
+            
+        # Generate explanation
+        tournament_stats = self.tournament.get_tournament_statistics()
+        ranking_explanation = (
+            f"Ranked using Elo tournament system with {tournament_stats['total_matches']} matches. "
+            f"The top hypotheses demonstrated superiority through scientific debate evaluations. "
+            f"Average Elo rating: {tournament_stats['avg_rating']:.1f}."
+        )
+        
+        # Build the final result
+        result = {
+            "ranked_hypotheses": ranked_hypotheses,
+            "ranking_explanation": ranking_explanation,
+            "top_hypotheses": top_hypotheses,
+            "tournament_state": {
+                "rankings": rankings,
+                "matches_played": tournament_stats["total_matches"],
+                "avg_rating": tournament_stats["avg_rating"]
+            },
+            "match_results": match_results
+        }
+        
+        return result
     
     def _build_ranking_prompt(self,
                             goal: Dict[str, Any],
@@ -211,7 +479,7 @@ class RankingAgent(BaseAgent):
                             iteration: int,
                             feedback: List[Dict[str, Any]]) -> str:
         """
-        Build the ranking prompt.
+        Build the ranking prompt for direct scoring.
         
         Args:
             goal: Research goal dictionary

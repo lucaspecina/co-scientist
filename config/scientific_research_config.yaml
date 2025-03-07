@@ -5,8 +5,28 @@ system:
   debug: false
   log_level: "INFO"
   max_iterations: 4
-  tournament_size: 10
   top_hypotheses_count: 5  # Increased for more diverse options
+
+# Workflow configuration
+workflow:
+  max_iterations: 4
+  top_hypotheses_count: 5
+  
+  # Tournament configuration for debate-based hypothesis evaluation
+  tournament:
+    enabled: true
+    matches: 15  # Number of debate matches per iteration
+    k_factor: 32.0  # Elo rating adjustment factor
+    debate_format: "multi_turn"  # Options: single_turn, multi_turn, critique
+    debate_max_turns: 2  # For multi-turn debates
+    use_mediator: true  # Whether to use a mediator in debates
+  
+  # Asynchronous task execution configuration
+  tasks:
+    enabled: true
+    workers: 4  # Number of worker processes
+    use_redis: true  # Use Redis for distributed task queue
+    max_tasks_per_worker: 3  # Maximum concurrent tasks per worker
 
 # Model configuration
 models:

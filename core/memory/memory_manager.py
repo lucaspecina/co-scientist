@@ -539,8 +539,23 @@ class FileSystemMemoryManager(MemoryManager):
             file_path: Path to the file
             data: Data to write
         """
+        # Custom JSON encoder to handle special types
+        class CustomJSONEncoder(json.JSONEncoder):
+            def default(self, obj):
+                # Handle datetime objects
+                if isinstance(obj, datetime):
+                    return obj.isoformat()
+                # Handle enum values
+                if isinstance(obj, Enum):
+                    return obj.value
+                # Handle tuple and set objects
+                if isinstance(obj, (tuple, set)):
+                    return list(obj)
+                # Fall back to parent class default behavior
+                return super().default(obj)
+                
         with open(file_path, 'w') as f:
-            json.dump(data, f, indent=2)
+            json.dump(data, f, indent=2, cls=CustomJSONEncoder)
     
     async def _read_json_file(self, file_path: str) -> Dict[str, Any]:
         """

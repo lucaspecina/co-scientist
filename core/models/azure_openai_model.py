@@ -257,13 +257,35 @@ class AzureOpenAIModel(BaseModel):
             ModelError: If generation fails and no default is provided
         """
         try:
-            return await self.generate_with_json_output(
-                prompt=prompt,
-                json_schema=schema,
-                system_prompt=system_prompt,
-                temperature=temperature,
-                **kwargs
-            )
+            # Handle if prompt is a list of message dicts (from debate module)
+            if isinstance(prompt, list) and kwargs.get('prompt_text'):
+                actual_prompt = kwargs.pop('prompt_text')[0].get('content', '')
+                return await self.generate_with_json_output(
+                    prompt=actual_prompt,
+                    json_schema=schema,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    **kwargs
+                )
+            # Handle if response_format is passed (from debate module)
+            elif kwargs.get('response_format'):
+                schema = kwargs.pop('response_format')
+                return await self.generate_with_json_output(
+                    prompt=prompt,
+                    json_schema=schema,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    **kwargs
+                )
+            # Standard case
+            else:
+                return await self.generate_with_json_output(
+                    prompt=prompt,
+                    json_schema=schema,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    **kwargs
+                )
         except Exception as e:
             logger.error(f"Error in generate_json: {e}")
             if default is not None:

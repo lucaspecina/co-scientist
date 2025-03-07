@@ -228,6 +228,35 @@ class CoScientistController:
             await self.resume_session(session_id)
             
         return status
+        
+    async def check_feedback(self, session_id: str) -> List[Dict[str, Any]]:
+        """
+        Get feedback history for a session.
+        
+        Args:
+            session_id: Session ID
+            
+        Returns:
+            List of feedback entries
+        """
+        if not self.system_ready:
+            raise RuntimeError("System is not ready. Call startup() first.")
+            
+        # Get session from memory manager
+        session_data = await self.memory_manager.load_session(session_id)
+        
+        # Handle session data appropriately based on its type
+        if isinstance(session_data, dict):
+            feedback_history = session_data.get("feedback_history", [])
+        else:
+            # If it's a WorkflowSession object
+            feedback_history = getattr(session_data, "feedback_history", [])
+            
+            # If feedback_history is not a list but a dict-like object
+            if hasattr(feedback_history, "items") and callable(getattr(feedback_history, "items", None)):
+                feedback_history = list(feedback_history.values())
+        
+        return feedback_history
     
     async def resume_session(self, session_id: str) -> Dict[str, Any]:
         """

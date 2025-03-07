@@ -167,15 +167,31 @@ class SupervisorAgent:
         # Load workflow configuration
         self.workflow_config = config.get("workflow", {})
         self.max_iterations = self.workflow_config.get("max_iterations", 5)
-        self.tournament_size = self.workflow_config.get("tournament_size", 8)
         self.top_hypotheses_count = self.workflow_config.get("top_hypotheses_count", 3)
+        
+        # Tournament configuration
+        tournament_config = self.workflow_config.get("tournament", {})
+        self.tournament_enabled = tournament_config.get("enabled", True)
+        self.tournament_matches = tournament_config.get("matches", 10)
+        self.tournament_debate_format = tournament_config.get("debate_format", "single_turn")
+        self.tournament_use_mediator = tournament_config.get("use_mediator", False)
+        
+        # Configure task framework
+        task_config = self.workflow_config.get("tasks", {})
+        self.use_async_tasks = task_config.get("enabled", True)
+        self.workers_count = task_config.get("workers", 3)
+        self.use_redis = task_config.get("use_redis", False)
         
         # Active session tracking
         self.active_sessions = {}
         self.session_callbacks = {}
         
-        logger.info("Supervisor agent initialized with max_iterations=%d, tournament_size=%d", 
-                   self.max_iterations, self.tournament_size)
+        logger.info(
+            "Supervisor agent initialized with max_iterations=%d, tournament_enabled=%s, "
+            "tournament_matches=%d, async_tasks=%s, workers=%d", 
+            self.max_iterations, self.tournament_enabled, self.tournament_matches,
+            self.use_async_tasks, self.workers_count
+        )
     
     async def create_session(self, 
                            goal_description: str, 
@@ -633,7 +649,7 @@ class SupervisorAgent:
     
     async def _run_ranking_phase(self, session: WorkflowSession) -> None:
         """
-        Run the hypothesis ranking phase.
+        Run the hypothesis ranking phase using tournament-based evaluation.
         
         Args:
             session: Workflow session
@@ -654,18 +670,76 @@ class SupervisorAgent:
             await self._update_session_state(session, WorkflowState.ERROR)
             return
         
+        # Build similarity graph if we have a proximity agent
+        similarity_graph = {}
+        proximity_agent = self._get_agent("proximity")
+        
+        if proximity_agent and len(hypotheses) > 1:
+            try:
+                # Get hypothesis embeddings and compute similarity
+                hypothesis_dicts = [h.to_dict() for h in hypotheses]
+                proximity_context = {
+                    "goal": session.goal.to_dict(),
+                    "hypotheses": hypothesis_dicts,
+                    "iteration": current_iter
+                }
+                
+                proximity_response = await proximity_agent.execute(
+                    proximity_context, 
+                    {"compute_similarity": True}
+                )
+                
+                # Extract similarity graph
+                similarity_graph = proximity_response.get("similarity_graph", {})
+                logger.info(f"Built similarity graph with {len(similarity_graph)} entries")
+                
+            except Exception as e:
+                logger.warning(f"Error building similarity graph: {str(e)}")
+                # Continue without similarity graph if it fails
+        
+        # Check if we have previous tournament state in the session
+        previous_tournament = session.tool_usage.get("tournament_state", None)
+        
         # Prepare context for ranking
         hypothesis_dicts = [h.to_dict() for h in hypotheses]
         context = {
             "goal": session.goal.to_dict(),
             "hypotheses": hypothesis_dicts,
             "iteration": current_iter,
-            "feedback": session.feedback_history
+            "feedback": session.feedback_history,
+            "previous_tournament": previous_tournament,
+            "similarity_graph": similarity_graph
         }
         
-        # Execute ranking
+        # Tournament configuration
+        tournament_config = self.workflow_config.get("tournament", {})
+        use_tournament = tournament_config.get("enabled", True)
+        tournament_matches = tournament_config.get("matches", 10)
+        
+        # Execute ranking with tournament if enabled and we have enough hypotheses
+        params = {
+            "use_tournament": use_tournament and len(hypotheses) > 1,
+            "tournament_matches": tournament_matches,
+            "tournament_k_factor": tournament_config.get("k_factor", 32.0),
+            "debate_format": tournament_config.get("debate_format", "single_turn"),
+            "debate_max_turns": tournament_config.get("debate_max_turns", 1),
+            "debate_use_mediator": tournament_config.get("use_mediator", False)
+        }
+        
         try:
-            response = await ranking_agent.execute(context, {})
+            response = await ranking_agent.execute(context, params)
+            
+            # Store tournament state for next iteration if available
+            if "tournament_state" in response:
+                session.tool_usage["tournament_state"] = response["tournament_state"]
+                
+            # Store match results for analysis if available
+            if "match_results" in response:
+                match_results = response.get("match_results", [])
+                if match_results:
+                    # Store limited match history to avoid excessive memory usage
+                    session.tool_usage["tournament_matches"] = match_results[:20]
+                    logger.info(f"Stored {len(match_results)} tournament match results")
             
             # Update hypothesis scores
             ranked_hypotheses = response.get("ranked_hypotheses", [])
@@ -676,12 +750,23 @@ class SupervisorAgent:
                     if hypothesis:
                         hypothesis.score = ranked.get("overall_score", 0.0)
                         hypothesis.scores = ranked.get("criteria_scores", {})
+                        # Add ranking rationale as a property of the hypothesis
+                        if "ranking_rationale" in ranked:
+                            hypothesis.rationale = ranked.get("ranking_rationale", "")
             
             # Sort hypotheses by score
             hypotheses.sort(key=lambda h: h.score, reverse=True)
             
-            # Update top hypotheses
-            session.top_hypotheses = [h.id for h in hypotheses[:self.top_hypotheses_count]]
+            # Get top hypotheses from the ranking response or from sorted hypotheses
+            if "top_hypotheses" in response and response["top_hypotheses"]:
+                session.top_hypotheses = response["top_hypotheses"][:self.top_hypotheses_count]
+            else:
+                # Fall back to sorted hypotheses if not provided
+                session.top_hypotheses = [h.id for h in hypotheses[:self.top_hypotheses_count]]
+            
+            # Log the ranking method used
+            ranking_method = response.get("metadata", {}).get("ranking_method", "direct")
+            logger.info(f"Ranking completed using {ranking_method} method with {len(ranked_hypotheses)} hypotheses")
             
             # Increment iteration counter
             session.iterations_completed += 1

@@ -100,6 +100,18 @@ def examine_session(session_id):
             else:
                 print("Goal: Not specified")
                 
+            # Sample hypothesis structure
+            if "hypotheses" in session_data and session_data["hypotheses"]:
+                print("\nSample hypothesis structure:")
+                print("-" * 80)
+                hyp = session_data["hypotheses"][0]
+                for key, value in hyp.items():
+                    value_type = type(value).__name__
+                    value_preview = str(value)
+                    if len(value_preview) > 100:
+                        value_preview = value_preview[:97] + "..."
+                    print(f"  - {key} ({value_type}): {value_preview}")
+                
         except json.JSONDecodeError as e:
             print(f"Error parsing JSON: {str(e)}")
             print("\nFirst 200 characters of the file:")

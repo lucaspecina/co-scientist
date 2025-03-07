@@ -32,6 +32,10 @@ logging.basicConfig(
     ]
 )
 
+# Disable verbose logging from external libraries
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('anthropic').setLevel(logging.WARNING)
+
 logger = logging.getLogger("co_scientist_cli")
 
 
@@ -65,6 +69,8 @@ class CoScientistCLI:
         create_parser.add_argument("--background", type=str, help="Background information")
         create_parser.add_argument("--constraints", type=str, nargs="+", help="Research constraints")
         create_parser.add_argument("--json", type=str, help="Path to JSON file with research parameters")
+        create_parser.add_argument("--tournament", action="store_true", help="Enable tournament-based evaluation")
+        create_parser.add_argument("--debates", action="store_true", help="Enable scientific debates")
         
         # Create session command
         create_session_parser = subparsers.add_parser("create-session", help="Create a new research session")
@@ -72,11 +78,15 @@ class CoScientistCLI:
         create_session_parser.add_argument("--domain", type=str, required=True, help="Scientific domain")
         create_session_parser.add_argument("--background", type=str, help="Background information")
         create_session_parser.add_argument("--constraints", type=str, nargs="+", help="Research constraints")
+        create_session_parser.add_argument("--tournament", action="store_true", help="Enable tournament-based evaluation")
+        create_session_parser.add_argument("--debates", action="store_true", help="Enable scientific debates")
         
         # Run session command
         run_parser = subparsers.add_parser("run", help="Run a research session")
         run_parser.add_argument("--session", type=str, required=True, help="Session ID")
         run_parser.add_argument("--wait", action="store_true", help="Wait for completion")
+        run_parser.add_argument("--tournament", action="store_true", help="Enable tournament-based evaluation")
+        run_parser.add_argument("--debates", action="store_true", help="Enable scientific debates")
         
         # Add feedback command
         feedback_parser = subparsers.add_parser("feedback", help="Add feedback to a session")
@@ -118,6 +128,16 @@ class CoScientistCLI:
         # Check feedback command
         check_feedback_parser = subparsers.add_parser("check-feedback", help="Check feedback for a session")
         check_feedback_parser.add_argument("--session", type=str, required=True, help="Session ID to check feedback for")
+        
+        # Tournament results command
+        tournament_parser = subparsers.add_parser("tournament", help="Get tournament results for a session")
+        tournament_parser.add_argument("--session", type=str, required=True, help="Session ID")
+        
+        # View debate results command
+        debate_parser = subparsers.add_parser("debates", help="View scientific debate results for a session")
+        debate_parser.add_argument("--session", type=str, required=True, help="Session ID")
+        debate_parser.add_argument("--debate-id", type=str, help="Specific debate ID to view")
+        debate_parser.add_argument("--limit", type=int, default=5, help="Maximum number of debates to show")
         
         # Add Azure-specific argument
         parser.add_argument('--azure', action='store_true', help='Run the system with Azure OpenAI configuration')
@@ -212,6 +232,10 @@ class CoScientistCLI:
             await self._cmd_examine_session()
         elif self.args.command == "session-monitor-gui":
             await self._cmd_session_monitor_gui()
+        elif self.args.command == "tournament":
+            await self._cmd_tournament()
+        elif self.args.command == "debates":
+            await self._cmd_debates()
     
     async def _cmd_start(self):
         """Start the system."""
@@ -284,6 +308,8 @@ class CoScientistCLI:
         domain = self.args.domain
         background = self.args.background or ""
         constraints = self.args.constraints or []
+        use_tournament = self.args.tournament
+        use_debates = self.args.debates
         
         # Validate required arguments
         if not goal:
@@ -295,15 +321,36 @@ class CoScientistCLI:
         
         # Create session
         try:
+            # Prepare creation options
+            create_options = {}
+            
+            # Configure tournament and debates if enabled
+            if use_tournament or use_debates:
+                if use_tournament:
+                    print("- Elo tournament system will be used for hypothesis ranking")
+                    create_options["use_tournament"] = True
+                if use_debates:
+                    print("- Scientific debates will be used for hypothesis evaluation")
+                    create_options["use_debates"] = True
+                
             session_id = await self.controller.create_session(
                 goal_description=goal,
                 domain=domain,
                 background=background,
-                constraints=constraints
+                constraints=constraints,
+                **create_options
             )
             print("Session created successfully!")
             print(f"Session ID: {session_id}")
-            print(f"Run the session with: python main.py run --session {session_id}")
+            
+            # Show appropriate run command based on the options
+            run_cmd = f"python main.py run --session {session_id}"
+            if use_tournament:
+                run_cmd += " --tournament"
+            if use_debates:
+                run_cmd += " --debates"
+            print(f"Run the session with: {run_cmd}")
+            
         except Exception as e:
             print(f"Error creating session: {str(e)}")
             sys.exit(1)
@@ -318,17 +365,33 @@ class CoScientistCLI:
         # Get arguments
         session_id = self.args.session
         wait = self.args.wait
+        use_tournament = self.args.tournament
+        use_debates = self.args.debates
         
         # Define status callback
         async def status_callback(session_id, old_state, new_state):
             print(f"Session state changed: {old_state} -> {new_state}")
+        
+        # Prepare run options
+        run_options = {}
+        
+        # Configure tournament and debates if enabled
+        if use_tournament or use_debates:
+            print("Using enhanced features:")
+            if use_tournament:
+                print("- Elo tournament system enabled for hypothesis ranking")
+                run_options["use_tournament"] = True
+            if use_debates:
+                print("- Scientific debates enabled for hypothesis evaluation")
+                run_options["use_debates"] = True
         
         # Run session
         try:
             status = await self.controller.run_session(
                 session_id=session_id,
                 wait_for_completion=wait,
-                status_callback=status_callback
+                status_callback=status_callback,
+                **run_options
             )
             
             print("\nSession status:")
@@ -345,6 +408,16 @@ class CoScientistCLI:
                 hypotheses = await self.controller.get_hypotheses(session_id, limit=3)
                 print("\nTop hypotheses:")
                 self._print_json(hypotheses)
+                
+                # If tournament was used, show how to view tournament results
+                if use_tournament:
+                    print("\nTo view tournament results:")
+                    print(f"python main.py tournament --session {session_id}")
+                
+                # If debates were used, show how to view debate results
+                if use_debates:
+                    print("\nTo view scientific debate results:")
+                    print(f"python main.py debates --session {session_id}")
                 
         except Exception as e:
             print(f"Error running session: {str(e)}")
@@ -877,6 +950,209 @@ class CoScientistCLI:
             print(f"Error launching session monitor GUI: {str(e)}")
             sys.exit(1)
     
+    async def _cmd_tournament(self):
+        """View tournament results for a session."""
+        print("Retrieving tournament results...")
+        
+        # Get arguments
+        session_id = self.args.session
+        file_path = f"data/sessions/{session_id}.json"
+        
+        if not os.path.exists(file_path):
+            file_path = f"data/session_{session_id}.json"
+            if not os.path.exists(file_path):
+                print(f"Error: Session file not found for ID: {session_id}")
+                return
+        
+        try:
+            # Read the session data
+            with open(file_path, 'r', encoding='utf-8') as f:
+                session_data = json.load(f)
+            
+            # Look for tournament information
+            tournament_state = None
+            tournament_matches = None
+            
+            # Check different possible locations for tournament data
+            if "tool_usage" in session_data:
+                if "tournament_state" in session_data["tool_usage"]:
+                    tournament_state = session_data["tool_usage"]["tournament_state"]
+                if "tournament_matches" in session_data["tool_usage"]:
+                    tournament_matches = session_data["tool_usage"]["tournament_matches"]
+            
+            if not tournament_state and not tournament_matches:
+                print("No tournament data found for this session.")
+                print("This session might not have used tournament-based ranking.")
+                return
+            
+            # Print tournament state if available
+            if tournament_state:
+                print("\nTournament State:")
+                print("-" * 80)
+                
+                if "rankings" in tournament_state:
+                    print("Hypothesis Rankings (by Elo rating):")
+                    rankings = tournament_state["rankings"]
+                    for i, (hyp_id, elo_rating, matches) in enumerate(rankings, 1):
+                        print(f"{i}. Hypothesis {hyp_id}: Elo {elo_rating:.1f} ({matches} matches)")
+                    
+                # Print other tournament statistics
+                if "matches_played" in tournament_state:
+                    print(f"\nTotal Matches: {tournament_state['matches_played']}")
+                if "avg_rating" in tournament_state:
+                    print(f"Average Elo Rating: {tournament_state['avg_rating']:.1f}")
+            
+            # Print match results if available
+            if tournament_matches:
+                print("\nScientific Debate Match Results:")
+                print("-" * 80)
+                
+                for i, match in enumerate(tournament_matches, 1):
+                    h1_id = match.get("hypothesis1_id", "unknown")
+                    h2_id = match.get("hypothesis2_id", "unknown")
+                    winner_id = match.get("winner_id")
+                    debate_id = match.get("debate_id", "unknown")
+                    
+                    winner_text = "Draw" if not winner_id else f"Winner: {winner_id}"
+                    print(f"Match {i}: {h1_id} vs {h2_id} -> {winner_text}")
+                    if "justification" in match:
+                        justification = match["justification"]
+                        # Truncate if too long
+                        if len(justification) > 100:
+                            justification = justification[:97] + "..."
+                        print(f"  Justification: {justification}")
+                    print(f"  Debate ID: {debate_id}")
+                    print()
+                
+                print(f"Showing {len(tournament_matches)} of {tournament_state.get('matches_played', 'unknown')} total matches")
+                print("\nTo view complete debate transcripts, use the debates command.")
+            
+        except Exception as e:
+            print(f"Error retrieving tournament results: {str(e)}")
+            sys.exit(1)
+    
+    async def _cmd_debates(self):
+        """View scientific debate results for a session."""
+        print("Retrieving scientific debate results...")
+        
+        # Get arguments
+        session_id = self.args.session
+        debate_id = self.args.debate_id
+        limit = self.args.limit
+        file_path = f"data/sessions/{session_id}.json"
+        
+        if not os.path.exists(file_path):
+            file_path = f"data/session_{session_id}.json"
+            if not os.path.exists(file_path):
+                print(f"Error: Session file not found for ID: {session_id}")
+                return
+        
+        try:
+            # Read the session data
+            with open(file_path, 'r', encoding='utf-8') as f:
+                session_data = json.load(f)
+            
+            # Look for debate information
+            debate_data = None
+            
+            # Check different possible locations for debate data
+            if "tool_usage" in session_data:
+                if "tournament_matches" in session_data["tool_usage"]:
+                    debates = session_data["tool_usage"]["tournament_matches"]
+                    
+                    if debate_id:
+                        # Find specific debate by ID
+                        for debate in debates:
+                            if debate.get("debate_id") == debate_id:
+                                debate_data = [debate]
+                                break
+                        
+                        if not debate_data:
+                            print(f"Debate with ID {debate_id} not found.")
+                            return
+                    else:
+                        # Show all debates up to limit
+                        debate_data = debates[:limit]
+            
+            if not debate_data:
+                print("No debate data found for this session.")
+                print("This session might not have used scientific debates for evaluation.")
+                return
+            
+            # Print debate information
+            print(f"\nFound {len(debate_data)} debates for session {session_id}:")
+            
+            for i, debate in enumerate(debate_data, 1):
+                print(f"\nDebate {i}/{len(debate_data)}:")
+                print("-" * 80)
+                
+                h1_id = debate.get("hypothesis1_id", "unknown")
+                h2_id = debate.get("hypothesis2_id", "unknown")
+                winner_id = debate.get("winner_id")
+                debate_id = debate.get("debate_id", "unknown")
+                
+                print(f"Debate ID: {debate_id}")
+                print(f"Hypotheses: {h1_id} vs {h2_id}")
+                print(f"Result: {'Draw' if not winner_id else f'Winner: {winner_id}'}")
+                
+                if "justification" in debate:
+                    print(f"\nJustification:")
+                    print(debate["justification"])
+                
+                # Check for full transcript
+                if "transcript" in debate:
+                    print("\nDebate Transcript:")
+                    transcript = debate["transcript"]
+                    
+                    for turn in transcript:
+                        role = turn.get("role", "unknown").upper()
+                        
+                        if role == "PROPONENT":
+                            print("\nPROPONENT:")
+                            if "argument" in turn:
+                                print(f"  Argument: {turn['argument']}")
+                            if "strengths" in turn and turn["strengths"]:
+                                print("  Strengths:")
+                                for s in turn["strengths"]:
+                                    print(f"    - {s}")
+                                    
+                        elif role == "OPPONENT":
+                            print("\nOPPONENT:")
+                            if "critique" in turn:
+                                print(f"  Critique: {turn['critique']}")
+                            if "weaknesses" in turn and turn["weaknesses"]:
+                                print("  Weaknesses:")
+                                for w in turn["weaknesses"]:
+                                    print(f"    - {w}")
+                                    
+                        elif role == "MEDIATOR":
+                            print("\nMEDIATOR:")
+                            if "summary" in turn:
+                                print(f"  Summary: {turn['summary']}")
+                            if "questions" in turn and turn["questions"]:
+                                print("  Questions:")
+                                for q in turn["questions"]:
+                                    print(f"    - {q}")
+                                    
+                        elif role == "EVALUATOR":
+                            print("\nEVALUATOR:")
+                            if "justification" in turn:
+                                print(f"  Justification: {turn['justification']}")
+                            if "criteria_scoring" in turn:
+                                print("  Criteria Scoring:")
+                                for criterion, score in turn["criteria_scoring"].items():
+                                    print(f"    - {criterion}: {score}")
+                
+                print("-" * 80)
+            
+            if not debate_id and len(debate_data) < session_data["tool_usage"].get("tournament_state", {}).get("matches_played", 0):
+                print(f"\nShowing {len(debate_data)} of {session_data['tool_usage'].get('tournament_state', {}).get('matches_played', 'unknown')} total debates")
+                print(f"To view a specific debate, use --debate-id")
+            
+        except Exception as e:
+            print(f"Error retrieving debate results: {str(e)}")
+            sys.exit(1)
+
     def _print_json(self, data):
         """Print data as formatted JSON."""
         print(json.dumps(data, indent=2))

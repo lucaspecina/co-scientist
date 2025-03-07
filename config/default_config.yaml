@@ -2,7 +2,7 @@
 
 system:
   debug: true
-  log_level: "DEBUG"
+  log_level: "INFO"
   max_iterations: 5
   tournament_size: 8
   top_hypotheses_count: 3
