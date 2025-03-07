@@ -669,12 +669,24 @@ class SupervisorAgent:
             
             # Update hypothesis scores
             ranked_hypotheses = response.get("ranked_hypotheses", [])
+            logger.info(f"Received {len(ranked_hypotheses)} ranked hypotheses from the ranking agent")
+            
             for ranked in ranked_hypotheses:
                 hyp_id = ranked.get("id")
                 if hyp_id:
                     hypothesis = next((h for h in hypotheses if h.id == hyp_id), None)
                     if hypothesis:
-                        hypothesis.score = ranked.get("overall_score", 0.0)
+                        # Check for both possible field names (score and overall_score)
+                        if "score" in ranked:
+                            score_value = float(ranked.get("score", 0.0))
+                            hypothesis.score = score_value
+                            logger.info(f"Updated hypothesis {hyp_id} with score {score_value}")
+                        else:
+                            score_value = float(ranked.get("overall_score", 0.0))
+                            hypothesis.score = score_value
+                            logger.info(f"Updated hypothesis {hyp_id} with overall_score {score_value}")
+                        
+                        # Update criteria scores
                         hypothesis.scores = ranked.get("criteria_scores", {})
             
             # Sort hypotheses by score

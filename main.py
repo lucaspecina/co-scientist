@@ -22,15 +22,68 @@ load_dotenv()
 
 from core.controller import CoScientistController
 
-# Configure logging
+# Configure more detailed logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
+        # Console handler with colors
         logging.StreamHandler(),
+        # File handler for persistent logs
         logging.FileHandler('co_scientist.log')
     ]
 )
+
+# Add a more detailed file handler for debugging
+debug_handler = logging.FileHandler('debug_co_scientist.log')
+debug_handler.setLevel(logging.DEBUG)
+debug_formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s'
+)
+debug_handler.setFormatter(debug_formatter)
+logging.getLogger().addHandler(debug_handler)
+
+# Add rich console logging if available
+try:
+    from rich.logging import RichHandler
+    from rich.console import Console
+    from rich.theme import Theme
+    
+    # Custom theme for rich logging
+    theme = Theme({
+        "info": "cyan",
+        "warning": "yellow",
+        "error": "bold red",
+        "critical": "bold white on red",
+        "debug": "dim",
+        "agent": "green",
+        "model": "magenta",
+        "tournament": "blue",
+        "evolution": "yellow",
+        "meta_review": "cyan"
+    })
+    
+    console = Console(theme=theme)
+    rich_handler = RichHandler(
+        console=console,
+        markup=True,
+        rich_tracebacks=True,
+        tracebacks_show_locals=False,
+        show_time=True,
+        show_path=False
+    )
+    rich_handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(rich_handler)
+    
+    # Remove the default console handler when using rich
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, RichHandler):
+            logging.getLogger().removeHandler(handler)
+            
+    logging.info("[bold green]Rich logging initialized[/bold green]")
+except ImportError:
+    # Rich not available, continue with standard logging
+    pass
 
 logger = logging.getLogger("co_scientist_cli")
 

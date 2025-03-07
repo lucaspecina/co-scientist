@@ -72,15 +72,19 @@ class GenerationAgent(BaseAgent):
         try:
             # Select generation method based on context or random selection
             if generation_method == "auto":
-                # In earlier iterations, prefer literature search and debates
-                # In later iterations, prefer assumptions and research expansion
-                if iteration < 2:
-                    methods = ["debate", "literature"] 
-                else:
-                    methods = ["debate", "literature", "assumptions", "expansion"]
+                # Only use debate method for now as the other methods are not fully implemented
+                generation_method = "debate"
                 
-                import random
-                generation_method = random.choice(methods)
+                # Disabled until all methods are fully implemented:
+                # # In earlier iterations, prefer literature search and debates
+                # # In later iterations, prefer assumptions and research expansion
+                # if iteration < 2:
+                #     methods = ["debate", "literature"] 
+                # else:
+                #     methods = ["debate", "literature", "assumptions", "expansion"]
+                # 
+                # import random
+                # generation_method = random.choice(methods)
             
             logger.info(f"Using generation method: {generation_method}")
             

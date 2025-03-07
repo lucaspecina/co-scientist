@@ -62,42 +62,92 @@ models:
 
 # Agent configuration - now using "default" which will resolve to azure_openai
 agents:
+  # Generation agent config as described in the paper
   generation:
-    count: 1  # Number of parallel generation agents
+    count: 2  # Number of parallel generation agents
     prompt_template: "templates/generation_agent.txt"
     model_provider: "default"  # Will use azure_openai
     temperature: 0.8  # Override default temperature
+    generation_count: 5
+    strategies:
+      - literature_exploration
+      - scientific_debate
+      - assumptions_identification
+      - research_expansion
   
+  # Reflection agent config as described in the paper
   reflection:
     count: 2  # Number of parallel reflection agents
     prompt_template: "templates/reflection_agent.txt"
     model_provider: "default"
+    detail_level: comprehensive
+    review_types:
+      - initial_review
+      - full_review
+      - deep_verification
+      - observation_review
+      - simulation_review
   
+  # Ranking agent config with Elo tournament as described in the paper
   ranking:
     count: 1
     prompt_template: "templates/ranking_agent.txt"
     model_provider: "default"
+    tournament_size: 8
+    elo_k_factor: 32
+    initial_elo: 1200
+    debate_turns: 3
+    full_debate_threshold: 0.25 # Top % for full debates
     criteria:
-      novelty: 0.3
-      plausibility: 0.4
-      testability: 0.2
-      alignment: 0.1
+      novelty: 0.25
+      plausibility: 0.25
+      testability: 0.25
+      impact: 0.25
   
+  # Evolution agent with multiple strategies as described in the paper
   evolution:
-    count: 1
+    count: 2  # Increased for more parallel evolution
     prompt_template: "templates/evolution_agent.txt"
     model_provider: "default"
+    creativity_level: 0.7
+    evolution_count: 3
+    evolution_strategies:
+      - enhance_grounding
+      - improve_coherence
+      - improve_practicality  
+      - improve_feasibility
+      - inspire
+      - combine
+      - simplify
+      - out_of_box
+    strategies_weights:
+      enhance_grounding: 0.2
+      improve_coherence: 0.15
+      improve_practicality: 0.15
+      improve_feasibility: 0.15
+      inspire: 0.1
+      combine: 0.1
+      simplify: 0.05
+      out_of_box: 0.1
   
+  # Proximity agent for calculating hypothesis similarity
   proximity:
     count: 1
     prompt_template: "templates/proximity_agent.txt"
     model_provider: "default"
-    similarity_threshold: 0.8
+    search_depth: comprehensive
+    similarity_threshold: 0.7
+    clustering_method: hierarchical
   
+  # Meta-review agent for research overview and contact identification
   meta_review:
     count: 1
     prompt_template: "templates/meta_review_agent.txt"
     model_provider: "default"
+    output_format: comprehensive
+    research_overview_style: detailed
+    citation_style: apa
+    contact_identification: true
 
 # Task execution configuration
 execution:
@@ -150,4 +200,23 @@ tools:
 ui:
   api_port: 8000
   cors_origins: ["http://localhost:3000"]
-  auth_enabled: false 
+  auth_enabled: false
+  
+# Scientific workflow configuration
+workflow:
+  max_iterations: 5
+  top_hypotheses_count: 5
+  tournament_matches_per_iteration: 10
+  debate_threshold: 0.25 # Top % of hypotheses for full debates
+  phases:
+    - generation
+    - reflection
+    - ranking
+    - evolution
+    - meta_review
+  phase_weights:
+    generation: 0.25
+    reflection: 0.2
+    ranking: 0.15
+    evolution: 0.3
+    meta_review: 0.1 

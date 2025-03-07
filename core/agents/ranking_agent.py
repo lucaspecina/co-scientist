@@ -65,7 +65,7 @@ class RankingAgent(BaseAgent):
         self.elo_k_factor = config.get("elo_k_factor", 32)  # Determines rating change magnitude
         self.tournament_matches = config.get("tournament_matches", 5)  # Matches per hypothesis
         self.debate_turns = config.get("debate_turns", 3)  # Number of debate turns for top hypotheses
-        self.full_debate_threshold = config.get("xfull_debate_threshold", 0.25)  # Top % for full debates
+        self.full_debate_threshold = config.get("full_debate_threshold", 0.25)  # Top % for full debates
         
     def _get_default_description(self, criterion: str) -> str:
         """
@@ -142,14 +142,30 @@ class RankingAgent(BaseAgent):
                 goal, 
                 elo_ratings,
                 iteration,
-                feedback
+                feedback,
+                context
             )
             
             # Update Elo ratings based on tournament results
             updated_ratings = self._update_elo_ratings(elo_ratings, tournament_results)
             
+            # Log the updated ratings for debugging
+            logger.info(f"Updated Elo ratings: {updated_ratings}")
+            
             # Apply ratings to hypotheses
             ranked_hypotheses = self._apply_ratings_to_hypotheses(hypotheses, updated_ratings)
+            
+            # Ensure all hypotheses have a score
+            for h in ranked_hypotheses:
+                if "score" not in h or h["score"] == 0:
+                    h_id = h.get("id", "unknown")
+                    if h_id in updated_ratings:
+                        h["score"] = float(updated_ratings[h_id])
+                        logger.info(f"Force-set score for hypothesis {h_id} to {h['score']}")
+            
+            # Log how many hypotheses have non-zero scores
+            non_zero_scores = sum(1 for h in ranked_hypotheses if h.get("score", 0) > 0)
+            logger.info(f"{non_zero_scores} out of {len(ranked_hypotheses)} hypotheses have non-zero scores")
             
             return {
                 "ranked_hypotheses": ranked_hypotheses,
@@ -310,7 +326,8 @@ class RankingAgent(BaseAgent):
                         goal: Dict[str, Any],
                         elo_ratings: Dict[str, float],
                         iteration: int,
-                        feedback: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+                        feedback: List[Dict[str, Any]],
+                        context: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
         Run tournament matches and determine winners.
         
@@ -320,16 +337,22 @@ class RankingAgent(BaseAgent):
             elo_ratings: Current Elo ratings
             iteration: Current iteration number
             feedback: List of feedback entries
+            context: Original context with all hypotheses (optional)
             
         Returns:
             List of match results
         """
         results = []
         
-        # Get all hypotheses and create a lookup dictionary
+        # Create a lookup dictionary of hypotheses
         all_hypotheses = {}
-        for hypothesis in goal.get("all_hypotheses", []):
-            all_hypotheses[hypothesis.get("id")] = hypothesis
+        
+        # If context was provided, get hypotheses from it
+        if context and "hypotheses" in context:
+            for hypothesis in context.get("hypotheses", []):
+                hyp_id = hypothesis.get("id")
+                if hyp_id:
+                    all_hypotheses[hyp_id] = hypothesis
             
         # Determine which hypotheses get full debate treatment
         top_hypothesis_ids = set(
@@ -624,13 +647,18 @@ class RankingAgent(BaseAgent):
         for hypothesis in ranked_hypotheses:
             hypothesis_id = hypothesis.get("id")
             if hypothesis_id in ratings:
-                hypothesis["score"] = ratings[hypothesis_id]
+                # Always use integer or float value for score to avoid type conversion issues
+                elo_score = float(ratings[hypothesis_id])
+                hypothesis["score"] = elo_score
                 
                 # Add Elo rating to metadata
                 if "metadata" not in hypothesis:
                     hypothesis["metadata"] = {}
-                    
-                hypothesis["metadata"]["elo_rating"] = ratings[hypothesis_id]
+                
+                hypothesis["metadata"]["elo_rating"] = elo_score
+                
+                # Log that we're applying a score to help debug
+                logger.info(f"Applied Elo score {elo_score} to hypothesis {hypothesis_id}")
         
         # Sort by rating (descending)
         ranked_hypotheses.sort(key=lambda h: h.get("score", 0), reverse=True)
